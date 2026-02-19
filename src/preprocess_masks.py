@@ -113,4 +113,4 @@ def create_masks(root_dir):
             dst.write(mask, 1)
 
 if __name__ == '__main__':
-    create_masks('data/SN8/train')
+    create_masks('data/SN8/Germany_Training_Public')

@@ -1,10 +1,11 @@
 import os
 import glob
 import boto3
+import argparse
 from botocore import UNSIGNED
 from botocore.client import Config
 
-def download_sn8_sample(target_dir='data/SN8'):
+def download_sn8_sample(target_dir='data/SN8', limit=500):
     """
     Downloads a sample of SpaceNet-8 data from S3.
     """
@@ -14,6 +15,30 @@ def download_sn8_sample(target_dir='data/SN8'):
     
     # 1. Gather existing Pre-event Tile IDs
     pre_dir = os.path.join(target_dir, 'Germany_Training_Public', 'PRE-event')
+    os.makedirs(pre_dir, exist_ok=True)
+    
+    # Check if we need to download more Pre-event tiles
+    existing_pre_count = len(glob.glob(os.path.join(pre_dir, '*.tif')))
+    if existing_pre_count < limit:
+        print(f"Existing Pre-event tiles: {existing_pre_count}. Downloading up to {limit}...")
+        paginator = s3.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix_base + 'PRE-event/')
+        
+        count = existing_pre_count
+        for page in pages:
+            if 'Contents' not in page: continue
+            for obj in page['Contents']:
+                if obj['Key'].endswith('/'): continue
+                if count >= limit: break
+                
+                local_path = os.path.join(target_dir, os.path.relpath(obj['Key'], 'spacenet/SN8_floods/'))
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                if not os.path.exists(local_path):
+                    s3.download_file(bucket_name, obj['Key'], local_path)
+                    print(f"Downloaded PRE: {os.path.basename(local_path)}")
+                count += 1
+            if count >= limit: break
+
     existing_pre = glob.glob(os.path.join(pre_dir, '*.tif'))
     target_suffixes = set()
     for p in existing_pre:
@@ -93,4 +118,9 @@ def download_sn8_sample(target_dir='data/SN8'):
 
 
 if __name__ == '__main__':
-    download_sn8_sample()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--target_dir', type=str, default='data/SN8')
+    parser.add_argument('--limit', type=int, default=500, help="Number of tiles to download (approx)")
+    args = parser.parse_args()
+    
+    download_sn8_sample(target_dir=args.target_dir, limit=args.limit)

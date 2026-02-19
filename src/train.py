@@ -6,6 +6,7 @@ from model import DualAxisGeoFormer
 from loss import TverskyLoss
 from augmentation import CopyPasteAugmentation
 import argparse
+import time
 
 def train(args):
     # Setup
@@ -31,15 +32,22 @@ def train(args):
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     criterion = TverskyLoss(alpha=0.3, beta=0.7)
     
+    # Scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    
     # Augmentation
     augmentor = CopyPasteAugmentation(prob=0.5)
 
+    print("Starting training...")
     min_loss = float('inf')
     
     # Loop
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1}/{args.epochs} | LR: {current_lr:.2e}")
         
         if train_loader:
             for i, batch in enumerate(train_loader):
@@ -52,7 +60,7 @@ def train(args):
                 outputs = model(pre_img, post_img)
                 
                 # Loss
-                loss = criterion(outputs, mask) # Ensure mask shape matches (B, H, W)
+                loss = criterion(outputs, mask)
                 
                 # Backward
                 optimizer.zero_grad()
@@ -62,14 +70,17 @@ def train(args):
                 epoch_loss += loss.item()
                 
                 if i % 10 == 0:
-                    print(f"Epoch [{epoch}/{args.epochs}], Step [{i}], Loss: {loss.item():.4f}")
+                    print(f"  Step [{i}/{len(train_loader)}], Loss: {loss.item():.4f}")
+            
+            # Step Scheduler
+            scheduler.step()
         else:
             # Dummy loop
-            # ... (omitted)
+            time.sleep(0.1)
             pass
 
         avg_loss = epoch_loss / max(len(train_loader), 1) if train_loader else 0
-        print(f"Epoch {epoch} finished. Avg Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch+1} finished. Avg Loss: {avg_loss:.4f}")
 
         # Save checkpoint
         is_best = avg_loss < min_loss
@@ -87,7 +98,7 @@ def train(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='data/SN8')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--save_all', action='store_true', help='Save checkpoint every epoch')

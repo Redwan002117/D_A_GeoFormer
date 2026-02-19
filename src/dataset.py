@@ -27,13 +27,44 @@ class SpaceNet8Dataset(Dataset):
         self.transform = transform
         self.img_size = img_size
 
-        self.pre_event_dir = os.path.join(root_dir, split, 'PRE-event')
-        self.post_event_dir = os.path.join(root_dir, split, 'POST-event')
-        self.mask_dir = os.path.join(root_dir, split, 'masks')
+        # In Phase 5 we used 'train'/'val' folders. 
+        # In Phase 6 we downloaded to Germany_Training_Public.
+        # Let's unify: Look in Germany_Training_Public first, fallback to split folder.
+        
+        base_path = os.path.join(root_dir, 'Germany_Training_Public')
+        if not os.path.exists(base_path):
+             # Fallback to old behavior
+             base_path = os.path.join(root_dir, split)
+        
+        self.pre_event_dir = os.path.join(base_path, 'PRE-event')
+        self.post_event_dir = os.path.join(base_path, 'POST-event')
+        self.mask_dir = os.path.join(base_path, 'masks')
+        if not os.path.exists(self.mask_dir): 
+             # Fallback to 'annotations/masks' if preprocess mask put them there?
+             # preprocess_masks.py puts in 'masks' next to 'annotations'.
+             # root_dir/masks?
+             # let's try base_path/masks
+             pass
 
-        # Assuming filenames match across directories or have a common identifier
-        # This is a simplified assumption; real SN8 might need CSV mapping
-        self.pre_images = sorted(glob.glob(os.path.join(self.pre_event_dir, '*.tif')))
+        all_pre_images = sorted(glob.glob(os.path.join(self.pre_event_dir, '*.tif')))
+        
+        # Simple deterministic split based on hash or index
+        # We process ALL files, then filter by split
+        
+        # Need to load ALL paths first to split consistent
+        self.pre_images = []
+        for p in all_pre_images:
+             # Hash filename to decide split
+             # hashlib.md5(p.encode()).hexdigest()... 
+             # Or just random seed
+             import hashlib
+             h = hashlib.md5(os.path.basename(p).encode()).hexdigest()
+             val_buckets = ['0', '1'] # 2/16 = 12.5% val
+             if split == 'val':
+                 if h[0] in val_buckets: self.pre_images.append(p)
+             else:
+                 if h[0] not in val_buckets: self.pre_images.append(p)
+                 
         self.post_images = sorted(glob.glob(os.path.join(self.post_event_dir, '*.tif')))
         self.masks = sorted(glob.glob(os.path.join(self.mask_dir, '*.tif')))
 
