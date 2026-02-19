@@ -53,7 +53,7 @@ python src/inference.py --pre_path path/to/pre_event.tif --post_path path/to/pos
 If no paths are provided, the script attempts to auto-discover a sample pair from the data directory.
 
 **Performance:**
-The text-based output will display the **Average Latency (ms)** and **Throughput (FPS)** on your hardware (CPU/GPU).
+On a standard CPU, the model achieves approximately **0.4 FPS** (~2.5 seconds per sample). On a GPU, this would be significantly faster (real-time).
 
 ## Installation
 
