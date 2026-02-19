@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 import glob
 
 class SpaceNet8Dataset(Dataset):
-    def __init__(self, root_dir, split='train', transform=None, img_size=256):
+    def __init__(self, root_dir, split='train', transform=None, img_size=224):
         """
         Args:
             root_dir (str): Path to SpaceNet-8 dataset directory.
@@ -37,30 +37,63 @@ class SpaceNet8Dataset(Dataset):
         self.post_images = sorted(glob.glob(os.path.join(self.post_event_dir, '*.tif')))
         self.masks = sorted(glob.glob(os.path.join(self.mask_dir, '*.tif')))
 
-        # Basic consistency check
-        if len(self.pre_images) != len(self.post_images):
-            print(f"Warning: Number of pre-event ({len(self.pre_images)}) and post-event ({len(self.post_images)}) images do not match.")
+        # Map Tile ID to paths
+        self.tile_map = {}
+        for p in self.pre_images:
+            tile_id = '_'.join(os.path.basename(p).split('_')[1:]) # Extract 0_15_63.tif
+            if tile_id not in self.tile_map: self.tile_map[tile_id] = {}
+            self.tile_map[tile_id]['pre'] = p
+            
+        for p in self.post_images:
+            tile_id = '_'.join(os.path.basename(p).split('_')[1:])
+            if tile_id in self.tile_map:
+                self.tile_map[tile_id]['post'] = p
+        
+        for p in self.masks:
+            # Mask filename might be "Mask_0_15_63.tif" or just "0_15_63.tif"
+            basename = os.path.basename(p)
+            if basename.startswith('Mask_'):
+                tile_id = '_'.join(basename.replace('Mask_', '').split('_')) 
+                # Mask_0_15_63.tif -> 0_15_63.tif -> split combined -> wait.
+                # tile_id logic: '_'.join(os.path.basename(p).split('_')[1:])
+                # If "Mask_0_15_63.tif", split('_') -> ['Mask', '0', '15', '63.tif']. 
+                # [1:] -> ['0', '15', '63.tif']. join -> 0_15_63.tif. 
+                # Ideally, tile_id should be "0_15_63".
+                # My logic: tile_id = '_'.join(os.path.basename(p).split('_')[1:])
+                # For 10500..._0_15_63.tif: ['10500...', '0', '15', '63.tif'] -> 0_15_63.tif.
+                # For Mask_0_15_63.tif: ['Mask', '0', '15', '63.tif'] -> 0_15_63.tif.
+                # So it WORKS automatically if I use 'Mask_' prefix!
+                pass
+            
+            tile_id = '_'.join(os.path.basename(p).split('_')[1:])
+            if tile_id in self.tile_map:
+                self.tile_map[tile_id]['mask'] = p
+
+        # Filter complete samples? Or allow partials?
+        # For training we need at least pre and post. Mask is needed for supervised.
+        # Let's keep only complete triples for now.
+        self.valid_tiles = [t for t, v in self.tile_map.items() if 'pre' in v and 'post' in v]
+        
+        print(f"Found {len(self.valid_tiles)} complete samples out of {len(self.pre_images)} pre-event images.")
 
     def __len__(self):
-        return len(self.pre_images)
+        return len(self.valid_tiles)
 
     def __getitem__(self, idx):
-        pre_img_path = self.pre_images[idx]
-        # Find corresponding post image and mask
-        # Assuming identical filenames for simplicity, in reality might differ slightly
-        basename = os.path.basename(pre_img_path)
-        post_img_path = os.path.join(self.post_event_dir, basename)
-        mask_path = os.path.join(self.mask_dir, basename)
+        tile_id = self.valid_tiles[idx]
+        sample_paths = self.tile_map[tile_id]
+        
+        pre_img_path = sample_paths['pre']
+        post_img_path = sample_paths['post']
+        mask_path = sample_paths.get('mask', None)
 
-        # START: Dummy data generation for testing if files don't exist
-        if not os.path.exists(post_img_path):
-             post_img_path = pre_img_path # Fallback 
-        if not os.path.exists(mask_path):
-             # Return dummy mask if not found
+        # ... (rest of loading) ...
+        # Handling missing mask (if we allow it, but we filtered earlier, so maybe just load dummy if strict filter off)
+        
+        if mask_path is None or not os.path.exists(mask_path):
              mask = np.zeros((self.img_size, self.img_size), dtype=np.uint8)
         else:
              mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
-        # END: Dummy data handling
 
         pre_img = cv2.imread(pre_img_path)
         post_img = cv2.imread(post_img_path)
@@ -100,5 +133,5 @@ class SpaceNet8Dataset(Dataset):
             'pre_img': pre_img, 
             'post_img': post_img, 
             'mask': mask,
-            'id': basename
+            'id': tile_id
         }

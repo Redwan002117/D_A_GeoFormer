@@ -8,3 +8,5 @@ scikit-image
 matplotlib
 rasterio
 albumentations
+boto3
+shapely

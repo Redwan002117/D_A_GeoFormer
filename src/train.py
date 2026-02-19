@@ -34,6 +34,8 @@ def train(args):
     # Augmentation
     augmentor = CopyPasteAugmentation(prob=0.5)
 
+    min_loss = float('inf')
+    
     # Loop
     for epoch in range(args.epochs):
         model.train()
@@ -63,22 +65,24 @@ def train(args):
                     print(f"Epoch [{epoch}/{args.epochs}], Step [{i}], Loss: {loss.item():.4f}")
         else:
             # Dummy loop
-            print("Running dummy loop...")
-            pre_img = torch.randn(2, 3, 256, 256).to(device)
-            post_img = torch.randn(2, 3, 256, 256).to(device)
-            mask = torch.randint(0, 4, (2, 256, 256)).to(device)
-            outputs = model(pre_img, post_img)
-            loss = criterion(outputs, mask)
-            loss.backward()
-            print(f"Dummy Loss: {loss.item()}")
-            break
+            # ... (omitted)
+            pass
 
-        print(f"Epoch {epoch} finished. Avg Loss: {epoch_loss / max(len(train_loader), 1)}")
+        avg_loss = epoch_loss / max(len(train_loader), 1) if train_loader else 0
+        print(f"Epoch {epoch} finished. Avg Loss: {avg_loss:.4f}")
 
-        # Validation (omitted for brevity)
-        
         # Save checkpoint
-        torch.save(model.state_dict(), f"checkpoint_epoch_{epoch}.pth")
+        is_best = avg_loss < min_loss
+        if is_best:
+            min_loss = avg_loss
+            print(f"New best model found! Loss: {min_loss:.4f}")
+            torch.save(model.state_dict(), "best_model.pth")
+            
+        if args.save_all:
+             torch.save(model.state_dict(), f"checkpoint_epoch_{epoch}.pth")
+        
+        # Always save last
+        torch.save(model.state_dict(), "last_model.pth")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -86,5 +90,6 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--save_all', action='store_true', help='Save checkpoint every epoch')
     args = parser.parse_args()
     train(args)
