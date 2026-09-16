@@ -45,6 +45,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
+import torch.nn as nn
+
+from checkpoint_utils import load_checkpoint_model
 from model import DualAxisGeoFormer, GeoFormerConfig
 
 CLASS_NAMES = ["background", "building", "road", "flooded"]
@@ -61,7 +64,7 @@ app = FastAPI(
     version="0.1.0",
 )
 
-_model: DualAxisGeoFormer | None = None
+_model: nn.Module | None = None
 _model_status = "not loaded"
 
 
@@ -69,12 +72,10 @@ def load_model() -> None:
     global _model, _model_status
     ckpt_path = Path(CHECKPOINT_PATH)
     if ckpt_path.exists():
-        ckpt = torch.load(ckpt_path, map_location=DEVICE)
-        cfg = GeoFormerConfig(**ckpt["config_dict"]) if "config_dict" in ckpt else GeoFormerConfig()
-        model = DualAxisGeoFormer(cfg)
-        model.load_state_dict(ckpt["model_state"])
+        model, ckpt = load_checkpoint_model(ckpt_path, device=DEVICE)
+        model_type = ckpt.get("model_type", "geoformer")
         _model_status = (
-            f"loaded {ckpt_path.name} -- trained on SYNTHETIC data only "
+            f"loaded {ckpt_path.name} (model_type={model_type}) -- trained on SYNTHETIC data only "
             "(pipeline-validation run, not SpaceNet-8 accuracy; see docs/MANUAL.md)"
         )
     else:

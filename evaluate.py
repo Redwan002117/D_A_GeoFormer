@@ -13,9 +13,9 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
+from checkpoint_utils import load_checkpoint_model
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
 from losses import TverskyLoss
-from model import DualAxisGeoFormer, GeoFormerConfig
 from train import per_class_f1
 
 CLASS_NAMES = ["background", "building", "road", "flooded"]
@@ -34,12 +34,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    cfg = GeoFormerConfig(**ckpt["config_dict"]) if "config_dict" in ckpt else GeoFormerConfig()
-    model = DualAxisGeoFormer(cfg).to(device)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-    print(f"Loaded {args.checkpoint} (epoch {ckpt.get('epoch', '?')}, "
+    model, ckpt = load_checkpoint_model(args.checkpoint, device=device)
+    print(f"Loaded {args.checkpoint} (model_type={ckpt.get('model_type', 'geoformer')}, "
+          f"epoch {ckpt.get('epoch', '?')}, "
           f"val_loss at save time {ckpt.get('val_loss', float('nan')):.4f})")
 
     if args.data_dir:

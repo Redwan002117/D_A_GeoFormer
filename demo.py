@@ -36,6 +36,7 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
+from checkpoint_utils import load_checkpoint_model
 from model import DualAxisGeoFormer, GeoFormerConfig
 from postprocess import bridge_road_gaps
 
@@ -112,10 +113,13 @@ def main():
     if is_trained:
         print(f"Loading trained checkpoint: {ckpt_path} "
               "(pipeline-validation run on SYNTHETIC data -- see docs/MANUAL.md)")
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        cfg = GeoFormerConfig(**ckpt["config_dict"]) if "config_dict" in ckpt else GeoFormerConfig()
-        model = DualAxisGeoFormer(cfg)
-        model.load_state_dict(ckpt["model_state"])
+        model, ckpt = load_checkpoint_model(ckpt_path, device="cpu")
+        if ckpt.get("model_type", "geoformer") != "geoformer":
+            raise SystemExit(
+                f"{ckpt_path} is a '{ckpt.get('model_type')}' checkpoint -- demo.py demonstrates "
+                "Dual-Axis GeoFormer specifically (it reads grid_saliency for Phase 4, which a "
+                "baseline checkpoint doesn't produce). Use evaluate.py for a baseline checkpoint."
+            )
     else:
         print("Building Dual-Axis GeoFormer (random init, untrained -- "
               f"no checkpoint at {ckpt_path or '(none requested)'})...")
