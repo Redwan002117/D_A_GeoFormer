@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import boto3
@@ -142,7 +143,23 @@ def _tile_id_from_filename(fname: str) -> str:
     return "_".join(fname.split("_")[1:]).rsplit(".", 1)[0]
 
 
-def collect_aoi_tiles(s3, aoi: str, n_tiles: int):
+def _list_all(s3, prefix: str) -> list[dict]:
+    """list_objects_v2 truncates at 1000 keys per call -- BUG THIS FIXES:
+    the original version of this function called it once, unpaginated.
+    Germany's AOI (~400 pre/post files) stayed under that limit by
+    coincidence, so nothing looked wrong; Louisiana-East (599 tiles, ~2+
+    files each) is large enough to plausibly exceed 1000, which would have
+    silently dropped tiles past the first page with no error -- they'd just
+    never appear in pre_by_tile/post_by_tile and get quietly skipped.
+    get_paginator handles any number of keys correctly."""
+    paginator = s3.get_paginator("list_objects_v2")
+    results = []
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        results.extend(page.get("Contents", []))
+    return results
+
+
+def collect_aoi_tiles(s3, aoi: str, n_tiles: int, max_workers: int = 16):
     """Lists and scores one AOI's tiles by flood-feature count. Returns a
     list of (namespaced_tile_id, ann_key, pre_key, post_key, n_flooded,
     n_features) tuples, at most n_tiles long, biased toward including every
@@ -150,38 +167,57 @@ def collect_aoi_tiles(s3, aoi: str, n_tiles: int):
     base = f"spacenet/SN8_floods/{aoi}/"
 
     print(f"[{aoi}] Listing annotation tiles...")
-    ann_resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=base + "annotations/")
-    ann_keys = [o["Key"] for o in ann_resp.get("Contents", [])]
+    ann_keys = [o["Key"] for o in _list_all(s3, base + "annotations/")]
     if not ann_keys:
         print(f"[{aoi}] No public annotations here (likely a blind test AOI) -- skipping.")
         return []
 
     print(f"[{aoi}] Listing pre/post imagery...")
     pre_by_tile = {}
-    for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=base + "PRE-event/").get("Contents", []):
+    for o in _list_all(s3, base + "PRE-event/"):
         fname = o["Key"].rsplit("/", 1)[-1]
         pre_by_tile[_tile_id_from_filename(fname)] = o["Key"]
 
     post_by_tile: dict[str, str] = {}
-    for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=base + "POST-event/").get("Contents", []):
+    for o in _list_all(s3, base + "POST-event/"):
         fname = o["Key"].rsplit("/", 1)[-1]
         post_by_tile.setdefault(_tile_id_from_filename(fname), o["Key"])  # first match only
 
-    print(f"[{aoi}] Scanning {len(ann_keys)} annotation files for flood content...")
-    scored = []
-    for key in ann_keys:
+    # BUG THIS FIXES (performance, not correctness): scanning every
+    # annotation file's flood content used to be one s3.get_object per file,
+    # sequentially -- 599 blocking round trips for Louisiana-East, with NO
+    # progress printed during the wait, which looked exactly like a hang the
+    # first time this ran. A thread pool overlaps the network wait time
+    # across many requests at once (S3 reads, not CPU work, so the GIL isn't
+    # a limiter here) and reports progress as it goes.
+    print(f"[{aoi}] Scanning {len(ann_keys)} annotation files for flood content "
+          f"({max_workers} concurrent requests)...")
+    relevant_keys = [
+        key for key in ann_keys
+        if key.rsplit("/", 1)[-1].replace(".geojson", "") in pre_by_tile
+        and key.rsplit("/", 1)[-1].replace(".geojson", "") in post_by_tile
+    ]
+
+    def _scan_one(key: str):
         tile_id = key.rsplit("/", 1)[-1].replace(".geojson", "")
-        if tile_id not in pre_by_tile or tile_id not in post_by_tile:
-            continue
         obj = s3.get_object(Bucket=BUCKET, Key=key)
         data = json.loads(obj["Body"].read())
         n_flooded = sum(1 for f in data["features"] if f["properties"].get("flooded") == "yes")
-        # Namespace by AOI so tile ids from different AOIs (which reuse the
-        # same small grid-index naming, e.g. both have a "0_15_63") never
-        # collide when combined into one dataset directory.
-        namespaced_id = f"{aoi}__{tile_id}"
-        scored.append((namespaced_id, key, pre_by_tile[tile_id], post_by_tile[tile_id],
-                        n_flooded, len(data["features"])))
+        return tile_id, key, n_flooded, len(data["features"])
+
+    scored = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_scan_one, key) for key in relevant_keys]
+        for i, fut in enumerate(as_completed(futures), 1):
+            tile_id, key, n_flooded, n_features = fut.result()
+            # Namespace by AOI so tile ids from different AOIs (which reuse
+            # the same small grid-index naming, e.g. both have a "0_15_63")
+            # never collide when combined into one dataset directory.
+            namespaced_id = f"{aoi}__{tile_id}"
+            scored.append((namespaced_id, key, pre_by_tile[tile_id], post_by_tile[tile_id],
+                            n_flooded, n_features))
+            if i % 50 == 0 or i == len(relevant_keys):
+                print(f"[{aoi}]   scanned {i}/{len(relevant_keys)}")
 
     scored.sort(key=lambda x: -x[4])
     n_flood_tiles = n_tiles // 2
