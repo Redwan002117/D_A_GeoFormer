@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+docs/
+*.png
+*.csv
+*.jpg
+test_*.png
+real_flood_sample.jpg
