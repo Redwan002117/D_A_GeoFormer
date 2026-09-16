@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
 from losses import TverskyLoss
 from model import DualAxisGeoFormer, GeoFormerConfig
+from baseline import SN8Baseline
 
 
 def per_class_f1(logits: torch.Tensor, target: torch.Tensor, num_classes: int, eps: float = 1e-7):
@@ -94,6 +95,11 @@ def main():
     p.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from")
     p.add_argument("--log-csv", type=str, default="training_log.csv")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--model", type=str, default="geoformer", choices=["geoformer", "baseline"],
+                    help="'geoformer' = Dual-Axis GeoFormer (this thesis's proposed model). "
+                         "'baseline' = SN8Baseline, a from-scratch U-Net/ResNet-34 reproduction "
+                         "with no bi-temporal fusion (see baseline.py) -- the comparison point "
+                         "for docs/MANUAL.md's Table 2.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -104,8 +110,11 @@ def main():
     print(f"Train samples: {len(train_loader.dataset)}  Val samples: {len(val_loader.dataset)}"
           + ("" if args.data_dir else "  [SYNTHETIC -- pipeline validation, not real SpaceNet-8 data]"))
 
-    model = DualAxisGeoFormer(GeoFormerConfig(num_classes=NUM_CLASSES)).to(device)
-    print(f"Model parameters: {model.num_parameters():,}")
+    if args.model == "baseline":
+        model = SN8Baseline(num_classes=NUM_CLASSES).to(device)
+    else:
+        model = DualAxisGeoFormer(GeoFormerConfig(num_classes=NUM_CLASSES)).to(device)
+    print(f"Model: {args.model}  parameters: {model.num_parameters():,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES)
@@ -117,6 +126,13 @@ def main():
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
+        ckpt_model_type = ckpt.get("model_type", "geoformer")  # older checkpoints predate this field
+        if ckpt_model_type != args.model:
+            raise SystemExit(
+                f"--resume checkpoint was trained with --model {ckpt_model_type}, "
+                f"but --model {args.model} was requested. Match them, or drop --resume "
+                f"to train {args.model} from scratch."
+            )
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
         # BUG THIS FIXES: optimizer.load_state_dict restores the PREVIOUS run's
@@ -199,10 +215,12 @@ def main():
         ckpt_payload = {
             "epoch": epoch, "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "model_type": args.model,
             # stored as a plain dict, not the dataclass instance -- torch>=2.6
             # defaults torch.load(weights_only=True), which refuses to
             # unpickle arbitrary classes (including our own GeoFormerConfig).
-            "config_dict": dataclasses.asdict(model.cfg),
+            # SN8Baseline has no config dataclass -- None for that model type.
+            "config_dict": dataclasses.asdict(model.cfg) if args.model == "geoformer" else None,
             "val_loss": val_loss, "best_val_loss": min(best_val_loss, val_loss),
         }
         torch.save(ckpt_payload, ckpt_dir / "last.pt")
