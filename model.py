@@ -178,17 +178,36 @@ class MBConv(nn.Module):
 
 
 class MaxViTBlock(nn.Module):
-    """One MBConv -> Block Attention -> Grid Attention stage unit."""
+    """One MBConv -> Block Attention -> Grid Attention stage unit.
 
-    def __init__(self, dim: int, window: int = 8, grid: int = 8, num_heads: int = 4):
+    `use_grid_attention=False` gives the "GeoFormer - grid attention"
+    ablation from the thesis proposal's Table 2 -- block attention (purely
+    local) still runs, but the strided global attention that's this
+    architecture's whole argument for road connectivity is skipped. This is
+    what isolates whether grid attention specifically, not just "the model,"
+    is responsible for a connectivity result -- see docs/MANUAL.md's
+    experimental design section.
+    """
+
+    def __init__(self, dim: int, window: int = 8, grid: int = 8, num_heads: int = 4,
+                 use_grid_attention: bool = True):
         super().__init__()
+        self.use_grid_attention = use_grid_attention
         self.mbconv = MBConv(dim)
         self.block_attn = BlockAttention(dim, window, num_heads)
-        self.grid_attn = GridAttention(dim, grid, num_heads)
+        self.grid_attn = GridAttention(dim, grid, num_heads) if use_grid_attention else None
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.mbconv(x)
         x = self.block_attn(x)
+        if self.grid_attn is None:
+            # No global attention ran -- there is no real saliency signal to
+            # report. A flat zero map (rather than skipping the return value
+            # entirely) keeps DualAxisGeoFormer.forward's output shape
+            # consistent whether or not this ablation is active, and reads
+            # as "no signal" rather than a fabricated one.
+            saliency = torch.zeros(x.shape[0], x.shape[2], x.shape[3], device=x.device, dtype=x.dtype)
+            return x, saliency
         x, saliency = self.grid_attn(x)
         return x, saliency
 
@@ -206,6 +225,7 @@ class GeoFormerConfig:
     stage_grids: tuple[int, ...] = (8, 4, 2, 1)
     num_heads: int = 4
     num_classes: int = 4  # background, building, road, flooded
+    use_grid_attention: bool = True  # False = the Table 2 "- grid attention" ablation
 
 
 class SiameseMaxViTEncoder(nn.Module):
@@ -229,7 +249,8 @@ class SiameseMaxViTEncoder(nn.Module):
             for i in range(len(cfg.stage_dims))
         ])
         self.stages = nn.ModuleList([
-            MaxViTBlock(dims[i + 1], cfg.stage_windows[i], cfg.stage_grids[i], cfg.num_heads)
+            MaxViTBlock(dims[i + 1], cfg.stage_windows[i], cfg.stage_grids[i], cfg.num_heads,
+                        use_grid_attention=cfg.use_grid_attention)
             for i in range(len(cfg.stage_dims))
         ])
 

@@ -100,6 +100,10 @@ def main():
                          "'baseline' = SN8Baseline, a from-scratch U-Net/ResNet-34 reproduction "
                          "with no bi-temporal fusion (see baseline.py) -- the comparison point "
                          "for docs/MANUAL.md's Table 2.")
+    p.add_argument("--no-grid-attention", action="store_true",
+                    help="Ablation (geoformer only): disable grid (global) attention, "
+                         "keeping only block (local) attention. Table 2's 'GeoFormer "
+                         "- grid attention' row.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -113,7 +117,11 @@ def main():
     if args.model == "baseline":
         model = SN8Baseline(num_classes=NUM_CLASSES).to(device)
     else:
-        model = DualAxisGeoFormer(GeoFormerConfig(num_classes=NUM_CLASSES)).to(device)
+        model = DualAxisGeoFormer(
+            GeoFormerConfig(num_classes=NUM_CLASSES, use_grid_attention=not args.no_grid_attention)
+        ).to(device)
+        if args.no_grid_attention:
+            print("Ablation: grid attention DISABLED (block attention only)")
     print(f"Model: {args.model}  parameters: {model.num_parameters():,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)

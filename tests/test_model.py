@@ -62,6 +62,27 @@ def test_gradients_flow_to_every_parameter():
     assert not missing, f"No gradient reached: {missing}"
 
 
+def test_grid_attention_ablation_reduces_parameters_and_runs():
+    """Table 2's 'GeoFormer - grid attention' ablation: disabling grid
+    attention should shrink the model (no grid-attention weights) and still
+    produce a correctly-shaped forward pass, including a saliency map (now
+    all-zero, since there's no real signal to report -- not fabricated)."""
+    cfg_with = _tiny_config()
+    cfg_without = GeoFormerConfig(**{**cfg_with.__dict__, "use_grid_attention": False})
+
+    model_with = DualAxisGeoFormer(cfg_with)
+    model_without = DualAxisGeoFormer(cfg_without)
+    assert model_without.num_parameters() < model_with.num_parameters()
+
+    pre = torch.randn(1, 3, 32, 32)
+    post = torch.randn(1, 3, 32, 32)
+    model_without.eval()
+    with torch.no_grad():
+        out = model_without(pre, post)
+    assert out["logits"].shape == (1, 4, 32, 32)
+    assert torch.all(out["grid_saliency"] == 0)
+
+
 def test_grid_attention_saliency_matches_batch_dimension():
     """Directly exercises the fixed module, not just the full model, so a
     future regression here fails at the smallest possible unit."""
