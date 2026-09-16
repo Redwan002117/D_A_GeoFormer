@@ -12,6 +12,13 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--log-csv", type=str, default="training_log.csv")
     p.add_argument("--out", type=str, default="training_curve.png")
+    p.add_argument(
+        "--label", type=str, default="synthetic data",
+        help="What this run was actually trained on, for the figure title -- e.g. "
+             "'real SpaceNet-8, Germany AOI'. BUG THIS FIXES: this used to be hardcoded "
+             "as 'synthetic data' regardless of --log-csv, which silently mislabeled every "
+             "real-data run's plot until caught by looking at the actual figure.",
+    )
     args = p.parse_args()
 
     rows = []
@@ -25,7 +32,7 @@ def main():
     axes[0].plot(epochs, [r["train_loss"] for r in rows], label="train", color="#1E7FA0", lw=2)
     axes[0].plot(epochs, [r["val_loss"] for r in rows], label="val", color="#B24B1E", lw=2)
     axes[0].set_xlabel("epoch"); axes[0].set_ylabel("Tversky loss")
-    axes[0].set_title("Loss (synthetic pipeline-validation run)")
+    axes[0].set_title(f"Loss ({args.label})")
     axes[0].legend(); axes[0].grid(alpha=0.25)
 
     class_names = ["background", "building", "road", "flooded"]
@@ -37,7 +44,7 @@ def main():
     axes[1].set_ylim(0, 1.05)
     axes[1].legend(); axes[1].grid(alpha=0.25)
 
-    fig.suptitle("Dual-Axis GeoFormer -- pipeline-validation training run (synthetic data)")
+    fig.suptitle(f"Dual-Axis GeoFormer -- training run ({args.label})")
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(args.out, dpi=150)
     print(f"Saved {args.out}")
