@@ -21,6 +21,8 @@ read as exploratory, not as evidence of accuracy.
 
 from __future__ import annotations
 
+import argparse
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +31,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from PIL import Image
 
-from model import DualAxisGeoFormer, GeoFormerConfig
+from checkpoint_utils import load_checkpoint_model
+
 
 IMG_SIZE = 128
 CLASS_NAMES = ["background", "building", "road", "flooded"]
@@ -54,13 +57,23 @@ def to_tensor(img: np.ndarray) -> torch.Tensor:
 
 
 def main():
-    ckpt_path = Path("checkpoints/best.pt")
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    cfg = GeoFormerConfig(**ckpt["config_dict"])
-    model = DualAxisGeoFormer(cfg)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-    print(f"Loaded {ckpt_path} ({model.num_parameters():,} params)")
+    parser = argparse.ArgumentParser(description="Run the pipeline on a real photograph")
+    parser.add_argument(
+        "--checkpoint", type=str, default="checkpoints/best.pt",
+        help="Which checkpoint to load. NOTE: 'best' is picked by lowest val_loss, and "
+             "Tversky-loss values are NOT comparable across differently-distributed data -- "
+             "a checkpoint resumed onto real data with a real, higher loss than a prior "
+             "synthetic run's loss will never beat it, so checkpoints/best.pt can get stuck "
+             "on a stale, older run while checkpoints/last.pt keeps moving. Check which one "
+             "you actually want; do not assume 'best' means 'most recently trained.'",
+    )
+    args = parser.parse_args()
+
+    ckpt_path = Path(args.checkpoint)
+    model, ckpt = load_checkpoint_model(ckpt_path, device="cpu")
+    print(f"Loaded {ckpt_path} (model_type={ckpt.get('model_type', 'geoformer')}, "
+          f"epoch {ckpt.get('epoch', '?')}, val_loss {ckpt.get('val_loss', float('nan')):.4f}, "
+          f"{model.num_parameters():,} params)")
 
     post_img = load_real_post("real_flood_sample.jpg")
     pre_img = make_dry_stand_in(IMG_SIZE)
@@ -74,19 +87,35 @@ def main():
     fractions = {CLASS_NAMES[c]: float((pred == c).sum()) / pred.size for c in range(4)}
     print("Predicted class pixel fractions:", {k: round(v, 3) for k, v in fractions.items()})
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4.5))
+    data_source = ckpt.get("data_source", "unknown (checkpoint predates data_source tracking)")
+    trained_on_real = data_source not in ("synthetic", "unknown (checkpoint predates data_source tracking)")
+    training_note = (
+        f"trained on {data_source}, epoch {ckpt.get('epoch', '?')}, "
+        f"val_loss {ckpt.get('val_loss', float('nan')):.4f}"
+    )
+    subtitle = (
+        f"({training_note}; this NIST photo itself was never part of training data either way "
+        "-- see docs/MANUAL.md)"
+    )
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 5))
     fig.suptitle(
-        "Real-photograph robustness check -- NOT a validated flood prediction\n"
-        "(trained on synthetic data only; real photo is out-of-distribution by design; see docs/MANUAL.md)",
-        fontsize=10.5,
+        "\n".join(textwrap.wrap("Real-photograph robustness check -- NOT a validated flood prediction", 90))
+        + "\n" + "\n".join(textwrap.wrap(subtitle, 100)),
+        fontsize=10,
     )
     axes[0].imshow(pre_img); axes[0].set_title("'pre' input\n(generated dry stand-in, not a real photo)", fontsize=9)
     axes[1].imshow(post_img); axes[1].set_title("'post' input\nREAL photo: Katrina flooding, NIST #15001", fontsize=9)
     axes[2].imshow(pred, cmap=ListedColormap(CLASS_COLORS), vmin=0, vmax=3)
-    axes[2].set_title("raw model output (argmax)\nexploratory -- not trained on real imagery", fontsize=9)
+    panel3_title = (
+        "raw model output (argmax)\ntrained on real SpaceNet-8 data -- still exploratory on this photo"
+        if trained_on_real else
+        "raw model output (argmax)\nexploratory -- not trained on real imagery"
+    )
+    axes[2].set_title(panel3_title, fontsize=9)
     for ax in axes:
         ax.set_xticks([]); ax.set_yticks([])
-    fig.tight_layout(rect=(0, 0, 1, 0.87))
+    fig.tight_layout(rect=(0, 0, 1, 0.82))
     fig.savefig("real_image_demo_output.png", dpi=150)
     print("Saved real_image_demo_output.png")
 

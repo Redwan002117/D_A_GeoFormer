@@ -280,12 +280,25 @@ def main():
             post_local = out_dir / "post" / f"{tile_id}.tif"
             ann_local = out_dir / f"{tile_id}.geojson"
 
+            # Download this tile's 3 files (pre/post imagery + annotation)
+            # concurrently instead of one after another -- each is a
+            # separate network round trip with no shared state between them,
+            # so there's nothing serial about them except that the old code
+            # waited for each before starting the next. ~3x fewer round
+            # trips' worth of wall-clock time spent waiting per tile.
+            downloads = []
             if not pre_local.exists():
-                s3.download_file(BUCKET, pre_key, str(pre_local))
+                downloads.append((pre_key, pre_local))
             if not post_local.exists():
-                s3.download_file(BUCKET, post_key, str(post_local))
+                downloads.append((post_key, post_local))
             if not ann_local.exists():
-                s3.download_file(BUCKET, ann_key, str(ann_local))
+                downloads.append((ann_key, ann_local))
+            if downloads:
+                with ThreadPoolExecutor(max_workers=len(downloads)) as pool:
+                    futures = [pool.submit(s3.download_file, BUCKET, key, str(local))
+                               for key, local in downloads]
+                    for fut in as_completed(futures):
+                        fut.result()  # re-raise any download error here, not silently
 
             to_pixel, width, height = geo_transform(pre_local)
             mask_arr = rasterize_mask(ann_local, to_pixel, width, height)

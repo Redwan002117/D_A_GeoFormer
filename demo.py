@@ -105,6 +105,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run the Dual-Axis GeoFormer prototype demo")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/best.pt",
                          help="Checkpoint to load. Pass an empty string to use random-init weights.")
+    parser.add_argument("--skip-bridging", action="store_true",
+                         help="Ablation (Table 2's 'GeoFormer - skeleton bridging' row): skip "
+                              "Phase 4 entirely and show the raw, un-bridged road gap instead, "
+                              "for a direct visual before/after comparison.")
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint) if args.checkpoint else None
@@ -147,13 +151,19 @@ def main():
         )[0, 0]
     )
 
-    print("Running Phase 4 post-processing (skeleton + attention-guided bridging) "
-          "on the GROUND-TRUTH road mask, to demonstrate that step in isolation "
-          "from the raw model prediction...")
     gap_road = gt_road & ~(gt_flood & gt_road)  # the visibly-broken road, matching post_img
-    bridged, bridges = bridge_road_gaps(
-        gap_road, saliency_full, max_gap_px=max(10, int(40 * IMG_SIZE / 256)), saliency_threshold=0.0
-    )
+    if args.skip_bridging:
+        print("Ablation: Phase 4 SKIPPED (--skip-bridging) -- showing the raw, un-bridged "
+              "road gap for direct comparison against the bridged version.")
+        from skimage.morphology import skeletonize
+        bridged, bridges = skeletonize(gap_road), []
+    else:
+        print("Running Phase 4 post-processing (skeleton + attention-guided bridging) "
+              "on the GROUND-TRUTH road mask, to demonstrate that step in isolation "
+              "from the raw model prediction...")
+        bridged, bridges = bridge_road_gaps(
+            gap_road, saliency_full, max_gap_px=max(10, int(40 * IMG_SIZE / 256)), saliency_threshold=0.0
+        )
     print(f"  gaps bridged: {len(bridges)}")
     for b in bridges:
         print(f"    {b}")
@@ -193,7 +203,12 @@ def main():
     for b in bridges:
         y0, x0 = b["from"]; y1, x1 = b["to"]
         axes[1, 2].plot([x0, x1], [y0, y1], color="#F4F6F1", lw=1, ls="--")
-    axes[1, 2].set_title(f"Phase 4: skeleton + attention-guided\nbridging ({len(bridges)} gap closed)")
+    panel6_title = (
+        "Ablation: Phase 4 SKIPPED\n(raw skeleton, gap left open)"
+        if args.skip_bridging else
+        f"Phase 4: skeleton + attention-guided\nbridging ({len(bridges)} gap closed)"
+    )
+    axes[1, 2].set_title(panel6_title)
 
     for ax in axes.flat:
         ax.set_xticks([]); ax.set_yticks([])

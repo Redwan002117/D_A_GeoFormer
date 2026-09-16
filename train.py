@@ -230,6 +230,13 @@ def main():
             # SN8Baseline has no config dataclass -- None for that model type.
             "config_dict": dataclasses.asdict(model.cfg) if args.model == "geoformer" else None,
             "val_loss": val_loss, "best_val_loss": min(best_val_loss, val_loss),
+            # BUG THIS FIXES: nothing previously recorded whether a checkpoint
+            # was trained on real or synthetic data, or which real dataset --
+            # a script showing a checkpoint's results had no reliable way to
+            # say what it was actually trained on except a caller's assumption
+            # (real_image_demo.py's caption used to hardcode "synthetic data
+            # only" regardless of what checkpoint was actually passed in).
+            "data_source": args.data_dir if args.data_dir else "synthetic",
         }
         torch.save(ckpt_payload, ckpt_dir / "last.pt")
         if val_loss < best_val_loss:
