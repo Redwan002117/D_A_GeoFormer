@@ -103,8 +103,14 @@ def to_tensor(img: np.ndarray) -> torch.Tensor:
 
 def main():
     parser = argparse.ArgumentParser(description="Run the Dual-Axis GeoFormer prototype demo")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/best.pt",
-                         help="Checkpoint to load. Pass an empty string to use random-init weights.")
+    parser.add_argument(
+        "--checkpoint", type=str, default="checkpoints/best.pt",
+        help="Checkpoint to load. Pass an empty string to use random-init weights. NOTE: "
+             "'best' means lowest val_loss seen -- Tversky loss is NOT comparable across "
+             "differently-distributed data, so a real-data run resumed from a synthetic "
+             "checkpoint can never beat that checkpoint's loss, and best.pt can stay stuck "
+             "on an old run while checkpoints/last.pt keeps moving. Check which one you want.",
+    )
     parser.add_argument("--skip-bridging", action="store_true",
                          help="Ablation (Table 2's 'GeoFormer - skeleton bridging' row): skip "
                               "Phase 4 entirely and show the raw, un-bridged road gap instead, "
