@@ -319,7 +319,24 @@ python train.py --data-dir real_sn8_dataset --resume checkpoints/last.pt \
                  --epochs <start_epoch + N> --image-size 256 --lr 2e-4
 ```
 
-## 13. Known, deliberate limitations of this prototype
+## 13. Bottlenecks, honestly, and how to actually overcome each one
+
+Four real bottlenecks were hit while building this, in this environment
+(Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
+one below is what was actually observed, not a generic list.
+
+| Bottleneck | What was actually observed | How it's addressed here | What still needs a bigger machine |
+|---|---|---|---|
+| **Compute (no GPU)** | A single forward+backward pass at 256px/batch 8 took ~4.5s on CPU; a full epoch over ~180 real tiles took 90–100s | Batch size and image size are kept modest by default so training stays CPU-tractable at all | `notebooks/train_on_colab.ipynb` gets a free GPU and can run much larger batches/epochs in the same wall-clock time |
+| **Memory** | Training at `--batch-size 8, --image-size 256` got the process **killed by the OS** for memory, with zero Python traceback — see `docs/INSTALL.md` §7 | `--batch-size 2` is now the real-data default; INSTALL.md documents the batch-size-vs-free-RAM tradeoff as measured, not guessed | A dedicated machine or Colab (with more headroom, or a GPU where activations live in VRAM, not system RAM) can safely use larger batches |
+| **Real data volume** | One AOI (Germany, 202 tiles) is not enough — 20 biased tiles overfit badly (§12); the full 202-tile Germany AOI is still one geography | `prepare_real_data.py` now pulls from multiple real AOIs (`--aoi Germany_Training_Public,Louisiana-East_Training_Public` or `--aoi all`), namespaced so tile ids never collide, appendable across runs (`--append`) so a long multi-AOI pull surviving an interruption doesn't lose progress (index.json is written after every tile, not just at the end) | SpaceNet-8's full public bucket has Germany (202 tiles) + Louisiana-East (599 tiles) with real labels = 801 tiles total; a genuinely large benchmark result still needs more than that, and Louisiana-West is present but unlabeled (SN-8's own blind test set) |
+| **S3 listing/scanning speed** | Scanning every AOI's annotations for flood content is 200–600 sequential `s3.get_object` calls, one tile at a time — the slow, silent part of `prepare_real_data.py` (no per-file progress printed during this phase, which looked like a hang the first time it happened) | Known and documented here, not hidden | A real fix (not yet done): parallelize the scan with a thread pool (the original draft repo's `download_data.py` already did this for its own download step) — worth doing before pulling `--aoi all` at real scale |
+
+The honest summary: every bottleneck above has either already been worked
+around in this repo, or has a named, concrete next step (Colab, more AOIs,
+parallelizing the scan) rather than a vague "needs more resources."
+
+## 14. Known, deliberate limitations of this prototype
 
 - **No pretrained backbone.** `GeoFormerConfig`'s ~11M-parameter encoder is
   randomly initialized, not MaxViT-Base/ImageNet-21k. Swapping in a `timm`

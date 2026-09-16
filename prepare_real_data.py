@@ -3,13 +3,17 @@ Downloads and rasterizes a real, labeled slice of SpaceNet-8 (the public,
 UNSIGNED-access `spacenet-dataset` S3 bucket -- no AWS credentials needed)
 into the layout `SpaceNet8Dataset` (dataset.py) expects.
 
-This is real data, not synthetic: real pre/post aerial tiles from the
-2021 Germany flood AOI, with real OpenStreetMap-derived building/road
-labels and a real `flooded: "yes"` flag SpaceNet-8's own annotators set
-per feature. It is NOT the full SpaceNet-8 training set (202 tiles exist
-in this one AOI alone; SN-8 has multiple AOIs) and this download only
-pulls a small slice of it -- see docs/MANUAL.md for what that does and
-doesn't prove.
+This is real data, not synthetic: real pre/post aerial tiles from real
+SpaceNet-8 AOIs (Germany, Louisiana-East -- see AVAILABLE_AOIS), with real
+OpenStreetMap-derived building/road labels and a real `flooded: "yes"` flag
+SpaceNet-8's own annotators set per feature. It is NOT the full SpaceNet-8
+benchmark and pulling every tile from every AOI is still a much larger
+download than a quick run needs -- see docs/MANUAL.md for what any given
+run size does and doesn't prove.
+
+Louisiana-West_Test_Public also exists in the bucket but ships NO public
+annotations (it's SN-8's actual blind competition test set) -- it can't be
+used here for labeled training or evaluation, only for unlabeled inference.
 
 Georeferencing: SpaceNet-8's GeoTIFFs carry plain EPSG:4326 tiepoint +
 pixel-scale tags (no rotation/skew), so a lon/lat -> pixel transform can be
@@ -22,6 +26,9 @@ whether they came from a building or road feature underneath.
 
 Usage:
     python prepare_real_data.py --n-tiles 24 --out-dir real_sn8_dataset
+    python prepare_real_data.py --aoi Louisiana-East_Training_Public --n-tiles 100 \
+        --out-dir real_sn8_dataset --append   # add fresh, different-geography tiles
+    python prepare_real_data.py --aoi all --n-tiles 300 --out-dir real_sn8_dataset_big
 """
 
 from __future__ import annotations
@@ -38,8 +45,13 @@ from PIL import Image, ImageDraw
 from PIL.TiffTags import TAGS
 
 BUCKET = "spacenet-dataset"
-BASE = "spacenet/SN8_floods/Germany_Training_Public/"
 TILE_PX = 256  # resize every tile to this for the model
+
+# All AOIs found under spacenet/SN8_floods/ with real, public labels (the
+# bucket also has Louisiana-West_Test_Public, but that one ships imagery
+# with NO public annotations -- it's SN-8's actual blind competition test
+# set, so it can't be used for labeled evaluation here).
+AVAILABLE_AOIS = ["Germany_Training_Public", "Louisiana-East_Training_Public"]
 
 
 def geo_transform(tif_path: Path):
@@ -62,6 +74,20 @@ def geo_transform(tif_path: Path):
     return to_pixel, width, height
 
 
+def _ring_to_pixels(ring, to_pixel) -> list[tuple[float, float]]:
+    """Converts a GeoJSON coordinate ring/line to pixel points.
+
+    BUG THIS FIXES (compatibility, not yet observed in SN-8's own Germany AOI
+    but real in general GeoJSON, which allows an optional 3rd/4th element --
+    elevation, a measure): `for lon, lat in ring` unpacks each point
+    positionally and raises `ValueError: too many values to unpack` the
+    moment a point has more than 2 coordinates. Taking only the first two
+    elements makes this robust to any GeoJSON, not just the exact shape of
+    the tiles this repo has downloaded so far.
+    """
+    return [to_pixel(pt[0], pt[1]) for pt in ring]
+
+
 def rasterize_mask(geojson_path: Path, to_pixel, width: int, height: int) -> np.ndarray:
     mask = Image.new("L", (width, height), 0)
     draw = ImageDraw.Draw(mask)
@@ -82,19 +108,25 @@ def rasterize_mask(geojson_path: Path, to_pixel, width: int, height: int) -> np.
 
         if geom["type"] == "Polygon":
             for ring in geom["coordinates"]:
-                pts = [to_pixel(lon, lat) for lon, lat in ring]
+                pts = _ring_to_pixels(ring, to_pixel)
+                if len(pts) < 3:
+                    continue  # a degenerate ring -- not enough points to fill
                 draw.polygon(pts, fill=1 if is_building else 2)
                 if is_flooded:
                     flood_draw.polygon(pts, fill=1)
         elif geom["type"] in ("LineString",):
-            pts = [to_pixel(lon, lat) for lon, lat in geom["coordinates"]]
+            pts = _ring_to_pixels(geom["coordinates"], to_pixel)
+            if len(pts) < 2:
+                continue  # a degenerate line -- nothing to draw
             draw.line(pts, fill=2, width=10)
             if is_flooded:
                 flood_draw.line(pts, fill=1, width=10)
         elif geom["type"] == "MultiPolygon":
             for poly in geom["coordinates"]:
                 for ring in poly:
-                    pts = [to_pixel(lon, lat) for lon, lat in ring]
+                    pts = _ring_to_pixels(ring, to_pixel)
+                    if len(pts) < 3:
+                        continue
                     draw.polygon(pts, fill=1 if is_building else 2)
                     if is_flooded:
                         flood_draw.polygon(pts, fill=1)
@@ -105,45 +137,37 @@ def rasterize_mask(geojson_path: Path, to_pixel, width: int, height: int) -> np.
     return mask_arr
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--n-tiles", type=int, default=24)
-    p.add_argument("--out-dir", type=str, default="real_sn8_dataset")
-    p.add_argument("--prefer-flooded", action="store_true", default=True)
-    args = p.parse_args()
+def _tile_id_from_filename(fname: str) -> str:
+    # "<catalogid>_0_15_63.tif" -> "0_15_63"
+    return "_".join(fname.split("_")[1:]).rsplit(".", 1)[0]
 
-    out_dir = Path(args.out_dir)
-    (out_dir / "pre").mkdir(parents=True, exist_ok=True)
-    (out_dir / "post").mkdir(parents=True, exist_ok=True)
-    (out_dir / "mask").mkdir(parents=True, exist_ok=True)
 
-    s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+def collect_aoi_tiles(s3, aoi: str, n_tiles: int):
+    """Lists and scores one AOI's tiles by flood-feature count. Returns a
+    list of (namespaced_tile_id, ann_key, pre_key, post_key, n_flooded,
+    n_features) tuples, at most n_tiles long, biased toward including every
+    flooded tile before filling the rest with dry ones."""
+    base = f"spacenet/SN8_floods/{aoi}/"
 
-    print("Listing annotation tiles...")
-    ann_resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=BASE + "annotations/")
-    ann_keys = [o["Key"] for o in ann_resp["Contents"]]
+    print(f"[{aoi}] Listing annotation tiles...")
+    ann_resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=base + "annotations/")
+    ann_keys = [o["Key"] for o in ann_resp.get("Contents", [])]
+    if not ann_keys:
+        print(f"[{aoi}] No public annotations here (likely a blind test AOI) -- skipping.")
+        return []
 
-    print("Listing pre/post imagery...")
-    pre_resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=BASE + "PRE-event/")
-    pre_keys = {k["Key"].split("_", 1)[1].rsplit(".", 1)[0]: k["Key"] for k in
-                [{"Key": o["Key"]} for o in pre_resp["Contents"]]}
-    # tile_id from "<catalogid>_0_15_63.tif" -> "0_15_63"
+    print(f"[{aoi}] Listing pre/post imagery...")
     pre_by_tile = {}
-    for o in pre_resp["Contents"]:
+    for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=base + "PRE-event/").get("Contents", []):
         fname = o["Key"].rsplit("/", 1)[-1]
-        tile_id = "_".join(fname.split("_")[1:]).rsplit(".", 1)[0]
-        pre_by_tile[tile_id] = o["Key"]
+        pre_by_tile[_tile_id_from_filename(fname)] = o["Key"]
 
-    post_resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=BASE + "POST-event/")
     post_by_tile: dict[str, str] = {}
-    for o in post_resp["Contents"]:
+    for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=base + "POST-event/").get("Contents", []):
         fname = o["Key"].rsplit("/", 1)[-1]
-        tile_id = "_".join(fname.split("_")[1:]).rsplit(".", 1)[0]
-        post_by_tile.setdefault(tile_id, o["Key"])  # first match only
+        post_by_tile.setdefault(_tile_id_from_filename(fname), o["Key"])  # first match only
 
-    # Rank tiles by how many flooded features they contain, to build a
-    # class-balanced-ish small sample (mix of flooded and dry tiles).
-    print(f"Scanning {len(ann_keys)} annotation files for flood content...")
+    print(f"[{aoi}] Scanning {len(ann_keys)} annotation files for flood content...")
     scored = []
     for key in ann_keys:
         tile_id = key.rsplit("/", 1)[-1].replace(".geojson", "")
@@ -152,54 +176,108 @@ def main():
         obj = s3.get_object(Bucket=BUCKET, Key=key)
         data = json.loads(obj["Body"].read())
         n_flooded = sum(1 for f in data["features"] if f["properties"].get("flooded") == "yes")
-        scored.append((tile_id, key, n_flooded, len(data["features"])))
+        # Namespace by AOI so tile ids from different AOIs (which reuse the
+        # same small grid-index naming, e.g. both have a "0_15_63") never
+        # collide when combined into one dataset directory.
+        namespaced_id = f"{aoi}__{tile_id}"
+        scored.append((namespaced_id, key, pre_by_tile[tile_id], post_by_tile[tile_id],
+                        n_flooded, len(data["features"])))
 
-    scored.sort(key=lambda x: -x[2])
-    n_flood_tiles = args.n_tiles // 2
-    selected = scored[:n_flood_tiles] + [s for s in scored if s[2] == 0][: args.n_tiles - n_flood_tiles]
-    selected = selected[: args.n_tiles]
-    print(f"Selected {len(selected)} tiles "
-          f"({sum(1 for s in selected if s[2] > 0)} with flood labels, "
-          f"{sum(1 for s in selected if s[2] == 0)} without).")
+    scored.sort(key=lambda x: -x[4])
+    n_flood_tiles = n_tiles // 2
+    flooded = [s for s in scored if s[4] > 0]
+    dry = [s for s in scored if s[4] == 0]
+    selected = flooded[:n_flood_tiles] + dry[: n_tiles - min(n_flood_tiles, len(flooded))]
+    selected = selected[:n_tiles]
+    print(f"[{aoi}] Selected {len(selected)} tiles "
+          f"({sum(1 for s in selected if s[4] > 0)} with flood labels, "
+          f"{sum(1 for s in selected if s[4] == 0)} without).")
+    return selected
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--n-tiles", type=int, default=24, help="Tiles PER AOI, not total.")
+    p.add_argument("--out-dir", type=str, default="real_sn8_dataset")
+    p.add_argument(
+        "--aoi", type=str, default="Germany_Training_Public",
+        help=f"Comma-separated AOI name(s), or 'all'. Available: {', '.join(AVAILABLE_AOIS)}",
+    )
+    p.add_argument(
+        "--append", action="store_true",
+        help="Add to an existing index.json in --out-dir instead of overwriting it "
+             "(skips tiles whose files already exist). Use this to combine AOIs across "
+             "separate runs without re-downloading what you already have.",
+    )
+    args = p.parse_args()
+
+    aois = AVAILABLE_AOIS if args.aoi == "all" else [a.strip() for a in args.aoi.split(",")]
+    unknown = [a for a in aois if a not in AVAILABLE_AOIS]
+    if unknown:
+        raise SystemExit(f"Unknown AOI(s): {unknown}. Available: {AVAILABLE_AOIS}")
+
+    out_dir = Path(args.out_dir)
+    (out_dir / "pre").mkdir(parents=True, exist_ok=True)
+    (out_dir / "post").mkdir(parents=True, exist_ok=True)
+    (out_dir / "mask").mkdir(parents=True, exist_ok=True)
 
     index = []
-    for tile_id, ann_key, n_flooded, n_features in selected:
-        pre_key, post_key = pre_by_tile[tile_id], post_by_tile[tile_id]
-        pre_local = out_dir / "pre" / f"{tile_id}.tif"
-        post_local = out_dir / "post" / f"{tile_id}.tif"
-        ann_local = out_dir / f"{tile_id}.geojson"
+    existing_ids = set()
+    index_path = out_dir / "index.json"
+    if args.append and index_path.exists():
+        with open(index_path) as f:
+            index = json.load(f)
+        existing_ids = {e["tile_id"] for e in index}
+        print(f"Appending to existing index.json -- {len(index)} tiles already present.")
 
-        if not pre_local.exists():
-            s3.download_file(BUCKET, pre_key, str(pre_local))
-        if not post_local.exists():
-            s3.download_file(BUCKET, post_key, str(post_local))
-        if not ann_local.exists():
-            s3.download_file(BUCKET, ann_key, str(ann_local))
+    s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
 
-        to_pixel, width, height = geo_transform(pre_local)
-        mask_arr = rasterize_mask(ann_local, to_pixel, width, height)
+    for aoi in aois:
+        for tile_id, ann_key, pre_key, post_key, n_flooded, n_features in collect_aoi_tiles(
+            s3, aoi, args.n_tiles
+        ):
+            if tile_id in existing_ids:
+                print(f"  {tile_id}: already in index.json, skipping")
+                continue
 
-        pre_img = Image.open(pre_local).convert("RGB").resize((TILE_PX, TILE_PX))
-        post_img = Image.open(post_local).convert("RGB").resize((TILE_PX, TILE_PX))
-        mask_img = Image.fromarray(mask_arr.astype(np.uint8)).resize((TILE_PX, TILE_PX), Image.NEAREST)
+            pre_local = out_dir / "pre" / f"{tile_id}.tif"
+            post_local = out_dir / "post" / f"{tile_id}.tif"
+            ann_local = out_dir / f"{tile_id}.geojson"
 
-        pre_png = f"pre/{tile_id}.png"
-        post_png = f"post/{tile_id}.png"
-        mask_png = f"mask/{tile_id}.png"
-        pre_img.save(out_dir / pre_png)
-        post_img.save(out_dir / post_png)
-        mask_img.save(out_dir / mask_png)
+            if not pre_local.exists():
+                s3.download_file(BUCKET, pre_key, str(pre_local))
+            if not post_local.exists():
+                s3.download_file(BUCKET, post_key, str(post_local))
+            if not ann_local.exists():
+                s3.download_file(BUCKET, ann_key, str(ann_local))
 
-        class_counts = {int(c): int((mask_arr == c).sum()) for c in np.unique(mask_arr)}
-        index.append({"pre": pre_png, "post": post_png, "mask": mask_png,
-                       "tile_id": tile_id, "n_flooded_features": n_flooded,
-                       "class_pixel_counts": class_counts})
-        print(f"  {tile_id}: {n_flooded}/{n_features} flooded features, "
-              f"mask classes {class_counts}")
+            to_pixel, width, height = geo_transform(pre_local)
+            mask_arr = rasterize_mask(ann_local, to_pixel, width, height)
 
-    with open(out_dir / "index.json", "w") as f:
-        json.dump(index, f, indent=2)
-    print(f"\nWrote {len(index)} tiles to {out_dir}/ (index.json).")
+            pre_img = Image.open(pre_local).convert("RGB").resize((TILE_PX, TILE_PX))
+            post_img = Image.open(post_local).convert("RGB").resize((TILE_PX, TILE_PX))
+            mask_img = Image.fromarray(mask_arr.astype(np.uint8)).resize((TILE_PX, TILE_PX), Image.NEAREST)
+
+            pre_png, post_png, mask_png = f"pre/{tile_id}.png", f"post/{tile_id}.png", f"mask/{tile_id}.png"
+            pre_img.save(out_dir / pre_png)
+            post_img.save(out_dir / post_png)
+            mask_img.save(out_dir / mask_png)
+
+            class_counts = {int(c): int((mask_arr == c).sum()) for c in np.unique(mask_arr)}
+            index.append({"pre": pre_png, "post": post_png, "mask": mask_png,
+                           "tile_id": tile_id, "aoi": aoi, "n_flooded_features": n_flooded,
+                           "class_pixel_counts": class_counts})
+            existing_ids.add(tile_id)
+            print(f"  {tile_id}: {n_flooded}/{n_features} flooded features, "
+                  f"mask classes {class_counts}")
+
+            with open(index_path, "w") as f:
+                json.dump(index, f, indent=2)  # write after every tile, not just at the end --
+                # a long multi-AOI pull that gets interrupted (network, memory, Ctrl+C) keeps
+                # everything downloaded so far usable, instead of losing it to an end-of-run write.
+
+    print(f"\nWrote {len(index)} tiles total to {out_dir}/ (index.json), "
+          f"across AOI(s): {', '.join(sorted(set(e.get('aoi', '?') for e in index)))}.")
 
 
 if __name__ == "__main__":

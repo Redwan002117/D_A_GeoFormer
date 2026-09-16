@@ -4,16 +4,30 @@ Real, runnable PyTorch code for the architecture proposed in the thesis
 *"Dual-Axis GeoFormer: Exploiting Global-Local Dependencies for Multiclass
 Flood Segmentation of Narrow Infrastructure via MaxViT."* Includes a
 completed training run, a real-SpaceNet-8-data experiment (downloaded
-directly from the public S3 bucket — no credentials needed), a deployable
-inference API, and a real-photograph robustness check.
+directly from the public S3 bucket — no AWS credentials needed), a
+deployable inference API, and a real-photograph robustness check.
 
-**Full documentation lives in `docs/MANUAL.md`** (usage, CLI reference,
-data format, real-data findings, troubleshooting) and `docs/DEPLOYMENT.md`
-(running it anywhere/in the cloud). This file is a quick orientation only.
-Sample outputs (figures, training curves, logs) referenced below live in
-`sample_outputs/`; checkpoints and downloaded data are `.gitignore`d
-(regenerate with the commands in Quickstart) since a trained checkpoint is
-~126MB, over GitHub's plain-file limit.
+## Install it — start here
+
+**New to this repo? Read [`docs/INSTALL.md`](docs/INSTALL.md) first.** It's
+a full, step-by-step setup guide (Windows/macOS/Linux, virtual environment,
+verifying the install, a real memory limit worth planning around) written
+from what actually got this repo's own checkpoints and figures produced —
+not guessed. The three-line version, if you already know what you're doing:
+
+```bash
+git clone https://github.com/Redwan002117/D_A_GeoFormer.git && cd D_A_GeoFormer
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt && python -m pytest tests/ -v
+```
+
+Full documentation: **[`docs/MANUAL.md`](docs/MANUAL.md)** (usage, CLI
+reference, data format, the honest real-data findings, troubleshooting) and
+**[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** (running it anywhere/in the
+cloud). Sample outputs (figures, training curves, logs) referenced below
+live in `sample_outputs/`; checkpoints and downloaded data are
+`.gitignore`d (a trained checkpoint is ~126MB, over GitHub's plain-file
+limit) — regenerate them with the commands below.
 
 ## What's real vs. simplified — say this when you present
 
@@ -34,18 +48,16 @@ Sample outputs (figures, training curves, logs) referenced below live in
 flood AOI) straight from the public `spacenet-dataset` S3 bucket and
 rasterizes the real GeoJSON building/road/`flooded` labels into training
 masks — no GDAL/rasterio needed, just the GeoTIFF's own georeferencing tags.
-Fine-tuning on a 20-tile sample of this real data produced a genuine
-learning curve (loss 0.76→0.56) but **validation building/road F1 collapsed
-— 20 tiles, biased toward flood-heavy ones, is not enough data.** This is
-reported as a finding, not hidden: see `docs/MANUAL.md` §12 for the full
-numbers and reasoning, and `sample_outputs/training_curve_real.png` /
-`sample_outputs/real_mask_sanity_check.png` for the evidence. The
-checkpoint-selection logic correctly protected against this — the shipped
-"best" checkpoint is still the better synthetic-converged one.
+Fine-tuning on a small biased sample first produced a real negative result
+(validation building/road F1 collapsed — not enough data); a full 202-tile,
+class-realistic run is documented in `docs/MANUAL.md` §12 along with what it
+did and didn't prove. The checkpoint-selection logic correctly protected
+against regressions throughout — the shipped "best" checkpoint is never
+overwritten by a run that performs worse.
 
 The honest one-line summary for your defense: *"the architecture, the real
 training loop, and the real-SpaceNet-8 data pipeline are all working
-end-to-end — what's missing is enough real data and compute to actually
+end-to-end — what's missing is enough real data and compute to fully
 converge on it, which is exactly the thesis's own next milestone."*
 
 ## Files
@@ -60,13 +72,12 @@ converge on it, which is exactly the thesis's own next milestone."*
 - `real_image_demo.py` — runs the pipeline on a real public-domain flood photo.
 - `serve.py` / `Dockerfile` — deployable inference API.
 - `tests/` — pytest suite.
+- `docs/INSTALL.md` / `docs/MANUAL.md` / `docs/DEPLOYMENT.md` — setup, usage, and deployment docs.
 - `sample_outputs/` — figures, training curves, and logs from the runs described above.
 
-## Quickstart
+## Quickstart (after installing — see above)
 
 ```bash
-pip install -r requirements.txt
-
 # Synthetic pipeline-validation training (reproduces sample_outputs/training_curve.png)
 python train.py --epochs 30 --batch-size 4 --image-size 128 \
                  --synthetic-train-size 120 --synthetic-val-size 24 --lr 1e-3
@@ -74,12 +85,13 @@ python train.py --epochs 30 --batch-size 4 --image-size 128 \
 # Real SpaceNet-8 data (no AWS account needed — public bucket)
 python prepare_real_data.py --n-tiles 24 --out-dir real_sn8_dataset
 python train.py --data-dir real_sn8_dataset --resume checkpoints/last.pt \
-                 --epochs 50 --image-size 256 --lr 2e-4
+                 --epochs 50 --image-size 256 --batch-size 2 --lr 2e-4
 
 python demo.py                    # trained-model demo, synthetic tile
 python real_image_demo.py         # trained model on a real photo
 uvicorn serve:app --port 8000     # run the inference API locally
+python -m pytest tests/ -v        # run the test suite
 ```
 
 See `docs/MANUAL.md` for everything else, including how to scale
-`prepare_real_data.py` past this repo's 20-tile proof-of-concept sample.
+`prepare_real_data.py` up to the full SpaceNet-8 benchmark.

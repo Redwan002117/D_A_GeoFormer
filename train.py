@@ -35,7 +35,16 @@ from model import DualAxisGeoFormer, GeoFormerConfig
 
 
 def per_class_f1(logits: torch.Tensor, target: torch.Tensor, num_classes: int, eps: float = 1e-7):
-    """logits: (B,C,H,W), target: (B,H,W). Returns a dict {class_idx: f1}."""
+    """logits: (B,C,H,W), target: (B,H,W). Returns a dict {class_idx: f1}.
+
+    BUG THIS FIXES: when a class is absent from BOTH prediction and target
+    (tp=fp=fn=0 -- e.g. "flooded" on a batch of entirely-dry tiles), the old
+    eps-only formula computed precision=recall=f1=0/(0+eps)=0 -- scoring a
+    correct trivial "there is none of this here" as a total miss. That's
+    backwards: with nothing to find and nothing wrongly found, the class is
+    reported perfect (1.0), not failing. Reported dry-tile "flooded=0.000"
+    metrics before this fix were this bug, not real model failure.
+    """
     pred = logits.argmax(dim=1)
     f1s = {}
     for c in range(num_classes):
@@ -44,6 +53,9 @@ def per_class_f1(logits: torch.Tensor, target: torch.Tensor, num_classes: int, e
         tp = (pred_c & target_c).sum().item()
         fp = (pred_c & ~target_c).sum().item()
         fn = (~pred_c & target_c).sum().item()
+        if tp == 0 and fp == 0 and fn == 0:
+            f1s[c] = 1.0
+            continue
         precision = tp / (tp + fp + eps)
         recall = tp / (tp + fn + eps)
         f1s[c] = 2 * precision * recall / (precision + recall + eps)
@@ -126,6 +138,18 @@ def main():
     # ends (or, combined with the lr restored above, from the wrong lr entirely).
     remaining_epochs = max(1, args.epochs - start_epoch)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=remaining_epochs)
+
+    # BUG THIS FIXES: if --resume's checkpoint epoch is already >= --epochs,
+    # `range(start_epoch, args.epochs)` below is empty, log_rows stays empty,
+    # and the CSV writer crashes at the end with a bare `IndexError: list
+    # index out of range` -- true, but useless for explaining what actually
+    # went wrong. Fail loudly and specifically, here, instead.
+    if start_epoch >= args.epochs:
+        raise SystemExit(
+            f"Nothing to do: --resume checkpoint is already at epoch {start_epoch}, "
+            f"which is >= --epochs {args.epochs}. Pass a larger --epochs to train "
+            f"further (e.g. --epochs {start_epoch + 10})."
+        )
 
     log_rows = []
     class_names = ["background", "building", "road", "flooded"]
