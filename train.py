@@ -300,6 +300,21 @@ def main():
                          "debugging of this project's own building/flooded collapse -- see "
                          "docs/MANUAL.md S12.14 item 1, S12.17-S12.18. Off by default: exact "
                          "prior single-head behavior, existing checkpoints unaffected.")
+    p.add_argument("--flood-class-weight", type=float, default=None,
+                    help="--separate-flood-head only: the flood loss's own [not-flooded, flooded] "
+                         "class-weight ratio is [1.0, this]. Defaults to class_weights[3] if "
+                         "--class-weights is set, else 1.0 (uniform) -- same as before this flag "
+                         "existed. v10 (docs/MANUAL.md S12.23) showed the separate head alone "
+                         "still lets flooded collapse in isolation (its own severe class "
+                         "imbalance, not cross-class competition) once inherited from "
+                         "--class-weights's structure-loss-oriented value (4.0) -- this flag lets "
+                         "the flood loss use a much higher, independently-tuned weight instead.")
+    p.add_argument("--flood-tversky-beta", type=float, default=None,
+                    help="--separate-flood-head only: the flood loss's own false-negative weight "
+                         "(beta). Defaults to --tversky-beta (shared with the structure loss) if "
+                         "unset -- same as before this flag existed. A higher beta specifically "
+                         "for flood pushes harder against missing flooded pixels without changing "
+                         "how the structure loss weights building/road/background.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -343,11 +358,16 @@ def main():
     flood_loss_fn = None
     if args.separate_flood_head:
         structure_weights = class_weights[:3] if class_weights else None
-        flood_weights = [1.0, class_weights[3]] if class_weights else None
+        flood_class_weight = args.flood_class_weight
+        if flood_class_weight is None:
+            flood_class_weight = class_weights[3] if class_weights else 1.0
+        flood_beta = args.flood_tversky_beta if args.flood_tversky_beta is not None else args.tversky_beta
+        print(f"Flood loss: class_weight=[1.0, {flood_class_weight}] beta={flood_beta} "
+              f"(independent of the structure loss's alpha={args.tversky_alpha}/beta={args.tversky_beta})")
         loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=3,
                                class_weights=structure_weights, focal_gamma=args.focal_gamma)
-        flood_loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=2,
-                                     class_weights=flood_weights, focal_gamma=args.focal_gamma)
+        flood_loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=flood_beta, num_classes=2,
+                                     class_weights=[1.0, flood_class_weight], focal_gamma=args.focal_gamma)
     else:
         loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES,
                                class_weights=class_weights, focal_gamma=args.focal_gamma)
