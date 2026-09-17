@@ -12,11 +12,13 @@ run its diff module against.
 Be explicit about this when you show it: this is a ROBUSTNESS CHECK, not a
 valid bi-temporal prediction -- it answers "does the real architecture run,
 without crashing or producing garbage shapes, on a real photograph full of
-texture, shadows, and reflections the synthetic training data never had,"
-not "does it correctly detect this real flood." The model was trained only
-on clean synthetic shapes (see docs/MANUAL.md); real photographic texture is
-out of its training distribution by design, and the prediction should be
-read as exploratory, not as evidence of accuracy.
+texture, shadows, and reflections the checkpoint's own training data may
+not resemble," not "does it correctly detect this real flood." This photo
+was never part of ANY checkpoint's training data either way -- what varies
+is whether the checkpoint itself was trained on synthetic shapes or real
+SpaceNet-8 tiles (see the printed/plotted data_source, sourced from the
+checkpoint itself, not assumed here). Either way, a single real, unlabeled
+photo run through the model once is exploratory, not evidence of accuracy.
 """
 
 from __future__ import annotations

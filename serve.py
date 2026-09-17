@@ -74,9 +74,15 @@ def load_model() -> None:
     if ckpt_path.exists():
         model, ckpt = load_checkpoint_model(ckpt_path, device=DEVICE)
         model_type = ckpt.get("model_type", "geoformer")
+        # BUG THIS FIXES: this message used to hardcode "trained on SYNTHETIC
+        # data only" no matter what checkpoint GEOFORMER_CHECKPOINT actually
+        # pointed at -- the exact same bug already found and fixed in
+        # real_image_demo.py's caption, missed here. Report the checkpoint's
+        # own recorded data_source instead of assuming.
+        data_source = ckpt.get("data_source", "unknown (checkpoint predates data_source tracking)")
         _model_status = (
-            f"loaded {ckpt_path.name} (model_type={model_type}) -- trained on SYNTHETIC data only "
-            "(pipeline-validation run, not SpaceNet-8 accuracy; see docs/MANUAL.md)"
+            f"loaded {ckpt_path.name} (model_type={model_type}, trained on: {data_source}) -- "
+            "see docs/MANUAL.md for what 'trained' means for this data source before trusting a prediction"
         )
     else:
         model = DualAxisGeoFormer(GeoFormerConfig())

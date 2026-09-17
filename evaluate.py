@@ -30,6 +30,13 @@ def main():
     p.add_argument("--image-size", type=int, default=128)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--synthetic-val-size", type=int, default=24)
+    p.add_argument(
+        "--held-out-only", action="store_true",
+        help="With --data-dir, evaluate only the same held-out validation split train.py "
+             "uses (SpaceNet8Dataset.split's stable, tile_id-hash-based 10%%) instead of the "
+             "full dataset. Omitting this evaluates train+val combined -- an optimistic "
+             "number, since it includes tiles the model was trained on.",
+    )
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,7 +47,14 @@ def main():
           f"val_loss at save time {ckpt.get('val_loss', float('nan')):.4f})")
 
     if args.data_dir:
-        ds = SpaceNet8Dataset(args.data_dir, image_size=args.image_size)
+        full = SpaceNet8Dataset(args.data_dir, image_size=args.image_size)
+        if args.held_out_only:
+            _, val_idx = full.split(val_fraction=0.1)
+            ds = torch.utils.data.Subset(full, val_idx)
+            print(f"[HELD-OUT split only -- {len(ds)}/{len(full)} tiles, same split train.py uses]")
+        else:
+            ds = full
+            print(f"[FULL dataset -- {len(ds)} tiles, includes training data, optimistic]")
     else:
         ds = SyntheticFloodDataset(length=args.synthetic_val_size, image_size=args.image_size, base_seed=100_000)
         print("[SYNTHETIC evaluation set -- pipeline-validation numbers, not SpaceNet-8 accuracy]")

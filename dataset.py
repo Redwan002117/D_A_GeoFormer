@@ -20,6 +20,7 @@ Two datasets live here:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -160,6 +161,35 @@ class SpaceNet8Dataset(Dataset):
         post_t = (post_t - 0.5) / 0.5
         mask_t = torch.from_numpy(np.array(mask)).long()
         return pre_t, post_t, mask_t
+
+    def split(self, val_fraction: float = 0.1) -> tuple[list[int], list[int]]:
+        """Returns (train_indices, val_indices), assigning each tile to a
+        side by hashing its own tile_id -- NOT by torch.utils.data.random_split
+        on the dataset's current length.
+
+        BUG THIS FIXES: random_split's split depends on len(dataset) and the
+        dataset's current index order. This dataset grows across separate
+        prepare_real_data.py runs (this exact project's real_sn8_dataset_full
+        went 202 -> 352 -> 801 tiles over several sessions) and --resume
+        training runs reload it fresh each time -- so the previous approach
+        silently drew a DIFFERENT random train/val split every time the
+        dataset's size changed, even at a fixed torch.manual_seed. A tile
+        that was held out for validation in one run could end up in the next
+        run's training set with no warning, and "held-out validation" claims
+        made across resumed runs on a growing dataset were not actually
+        comparing against a stable held-out set. Hashing each tile's own
+        `tile_id` assigns it to the same side forever, regardless of how many
+        other tiles exist or what order the index lists them in.
+        """
+        val_indices, train_indices = [], []
+        for i, entry in enumerate(self.entries):
+            tile_id = entry.get("tile_id", entry["pre"])  # tile_id if present, else its own path
+            h = int(hashlib.md5(tile_id.encode()).hexdigest(), 16)
+            if (h % 10_000) < int(val_fraction * 10_000):
+                val_indices.append(i)
+            else:
+                train_indices.append(i)
+        return train_indices, val_indices
 
 
 if __name__ == "__main__":

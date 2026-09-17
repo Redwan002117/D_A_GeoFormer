@@ -133,9 +133,15 @@ class ConfusionAccumulator:
 def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
     if args.data_dir:
         full = SpaceNet8Dataset(args.data_dir, image_size=args.image_size)
-        n_val = max(1, int(0.1 * len(full)))
-        n_train = len(full) - n_val
-        train_ds, val_ds = torch.utils.data.random_split(full, [n_train, n_val])
+        # BUG THIS FIXES: random_split's split depends on len(full) and index
+        # order, both of which change every time real_sn8_dataset_full grows
+        # (this exact project's dataset went 202 -> 352 -> 801 tiles across
+        # this session's runs). A hash-based split keeps each tile on the
+        # same side of train/val forever -- see SpaceNet8Dataset.split's
+        # docstring for the full story of what this actually broke.
+        train_idx, val_idx = full.split(val_fraction=0.1)
+        train_ds = torch.utils.data.Subset(full, train_idx)
+        val_ds = torch.utils.data.Subset(full, val_idx)
     else:
         train_ds = SyntheticFloodDataset(length=args.synthetic_train_size, image_size=args.image_size, base_seed=0)
         val_ds = SyntheticFloodDataset(length=args.synthetic_val_size, image_size=args.image_size, base_seed=100_000)

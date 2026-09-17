@@ -1,11 +1,14 @@
 """
 End-to-end prototype demo.
 
-Since no SpaceNet-8 tiles are downloaded in this environment, this script
-generates a SYNTHETIC pre/post tile pair (a schematic road + a few
-buildings, with a "flood" region overlaid only in the post-event tile and
-a gap cut into the road under the water) and runs it through the real
-Dual-Axis GeoFormer network end to end:
+This script's own INPUT is always a generated SYNTHETIC pre/post tile pair
+(a schematic road + a few buildings, with a "flood" region overlaid only
+in the post-event tile and a gap cut into the road under the water) --
+regardless of whether real SpaceNet-8 data has been downloaded elsewhere
+in this repo or what the loaded checkpoint was itself trained on (that's
+reported separately, from the checkpoint's own recorded data_source, not
+assumed here). It runs that synthetic scene through the real Dual-Axis
+GeoFormer network end to end:
 
     pre, post tiles
       -> DualAxisGeoFormer forward pass (Siamese MaxViT + Diff + U-decoder)
@@ -15,15 +18,16 @@ Dual-Axis GeoFormer network end to end:
 
 and saves one figure, `demo_output.png`, showing every stage.
 
-By default this loads `checkpoints/best.pt` -- the weights from `train.py`'s
-pipeline-validation run on the SYNTHETIC dataset (see docs/MANUAL.md "What
-'trained' means here"). That run proves the model, loss, and metrics are all
-wired correctly: it does NOT make this a real flood detector. The synthetic
-generator here draws simple, clean shapes that are much easier to segment
-than real satellite imagery -- the near-perfect panel-3 prediction you'll
-see is honest evidence the training loop works, not a SpaceNet-8 accuracy
-number. Pass --checkpoint "" (empty) to fall back to random-init weights
-and reproduce the original "expected to look like noise" behaviour.
+By default this loads `checkpoints/best.pt` -- whatever that currently is
+(check the printed/plotted data_source; "best" means lowest val_loss seen,
+which is NOT the same as "most recently trained" -- see --checkpoint's own
+help text and docs/MANUAL.md "What 'trained' means here"). Since this
+script's own scene is always synthetic, a near-perfect panel-3 prediction
+is honest evidence the pipeline and the loaded checkpoint's weights are
+wired correctly together -- it is never, on its own, a SpaceNet-8 accuracy
+number, regardless of what data trained the checkpoint. Pass --checkpoint
+"" (empty) to fall back to random-init weights and reproduce the original
+"expected to look like noise" behaviour.
 """
 
 from __future__ import annotations
@@ -175,10 +179,16 @@ def main():
         print(f"    {b}")
 
     # ---------------- figure ----------------
-    weight_state = (
-        "trained on SYNTHETIC data -- pipeline-validation run, not SpaceNet-8 accuracy"
-        if is_trained else "random-init weights (untrained)"
-    )
+    # BUG THIS FIXES: this used to hardcode "trained on SYNTHETIC data"
+    # whenever is_trained was true, regardless of what checkpoint was
+    # actually loaded -- the same bug already fixed in real_image_demo.py's
+    # caption and serve.py's /health status, missed here. Report the
+    # checkpoint's own recorded data_source instead.
+    if is_trained:
+        data_source = ckpt.get("data_source", "unknown (checkpoint predates data_source tracking)")
+        weight_state = f"trained on {data_source}"
+    else:
+        weight_state = "random-init weights (untrained)"
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     fig.suptitle(
         f"Dual-Axis GeoFormer -- architecture prototype ({weight_state})\n"
@@ -192,7 +202,7 @@ def main():
     cmap = ListedColormap(CLASS_COLORS)
     axes[0, 2].imshow(pred_classes, cmap=cmap, vmin=0, vmax=3)
     pred_title = (
-        "Raw model output (argmax)\ntrained on SYNTHETIC data -- see docs/MANUAL.md"
+        f"Raw model output (argmax)\n{weight_state} -- see docs/MANUAL.md"
         if is_trained else "Raw model output (argmax)\nUNTRAINED -- expected to look like noise"
     )
     axes[0, 2].set_title(pred_title)
