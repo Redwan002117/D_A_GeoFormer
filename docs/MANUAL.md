@@ -465,6 +465,22 @@ metric and should be read as superseded by this section, not as still
 true alongside it — it is kept above, uncorrected in place, as an honest
 record of the investigation rather than quietly edited away.
 
+**UPDATE, superseded by §12.11 -- this specific "0/801, never" claim no
+longer holds.** It was true of the from-scratch, randomly-initialized
+encoder used everywhere above. Once a pretrained backbone was added
+(§12.11, `--pretrained-backbone efficientnet_b0`), the very first
+training epoch produced real, non-zero predictions for BOTH classes with
+genuine per-image coverage: `building` F1 0.454 (80/87 held-out images),
+`flooded` F1 0.117 (85/87 images) -- both improved further by epoch 2
+(`building` 0.491, `flooded` 0.144). So "detects buildings or flooding at
+all" is no longer accurate as an absolute; what's still true, and now the
+more precise honest claim, is that this project has not yet produced a
+checkpoint where that detection is STABLE across many epochs -- both
+classes narrowed back toward collapse by epoch 3-6 of that same run (see
+§12.11's full table). Read as: the pretrained backbone proved the
+representations needed for real detection exist and are reachable, not
+that the stability problem is solved.
+
 **What this actually means for next steps**: more real data (§12.2's 801
 tiles vs. §12's 202) did NOT fix the rare-class collapse — the metric bug
 just made it look like it did. The real open problems are the model
@@ -869,8 +885,37 @@ download is a one-time, cached cost, not a correctness problem -- but
 named so it isn't a surprise.
 
 **Training restarted a fifth time** with this backbone
-(`training_log_geoformer_801_v5.csv`, v1-v4 logs all preserved) --
-results appended here as real epochs land.
+(`training_log_geoformer_801_v5.csv`, v1-v4 logs all preserved), combined
+with `--oversample-rare-classes --class-weights "1,2,2,4"`:
+
+| epoch | val_loss | building F1 (cov) | road F1 (cov) | flooded F1 (cov) |
+|---|---|---|---|---|
+| 1 | 0.734 | **0.454 (80/87)** | 0.269 (84/87) | **0.117 (85/87)** |
+| 2 | 0.686 | **0.491 (78/87)** (best ever, either class) | 0.342 (83/87) | **0.144 (84/87)** (best ever) |
+| 3 | 0.381 | 0.018 (25/87) | 0.337 (83/87) | 0.000 (0/87) |
+| 4 | 0.375 | 0.000 (0/87) | 0.361 (83/87) | 0.000 (0/87) |
+| 5 | 0.375 | 0.000 (0/87) | 0.332 (84/87) | 0.000 (0/87) |
+| 6 | 0.370 | 0.000 (0/87) | 0.362 (81/87) | 0.000 (0/87) |
+| 7 | 0.378 | 0.000 (0/87) | 0.325 (80/87) | 0.000 (0/87) |
+
+The single most important result of this entire project's real-data
+history is right there in epochs 1-2: `building` F1 0.491 and `flooded`
+F1 0.144, BOTH with real, high per-image coverage, simultaneously with
+`road` also working. No prior configuration (from-scratch encoder, any
+oversampling/weighting combination) ever produced that. It did not hold
+-- by epoch 4 both collapsed back to exactly 0.000, the same shape seen
+before, just delayed further and from a much higher peak. `road` alone
+has stayed stable across all 7 epochs (0.27-0.36 throughout), the same
+pattern as every prior run.
+
+Read plainly: the pretrained backbone gives the network the CAPACITY to
+represent building/flooded well (proven, not theoretical -- epoch 2 is
+real evidence). What it hasn't fixed is why that capability doesn't
+survive continued training -- still consistent with the S12.10 synthesis
+that a single joint 4-way softmax makes every foreground class compete
+for the same probability mass, and now with additional evidence that
+better features raise the PEAK before the collapse rather than preventing
+it. Training continues; this table will be updated as it does.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
