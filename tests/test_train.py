@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 import torch
 
-from train import checkpoint_score, reinit_flood_head
+from train import checkpoint_score, reinit_flood_head, ema_init, ema_update
 from model import DualAxisGeoFormer, GeoFormerConfig
 
 
@@ -113,6 +113,54 @@ def test_reinit_flood_head_changes_only_the_flood_head():
         "reinit_flood_head must clear flood_head's stale Adam moment estimates"
 
 
+def test_ema_update_moves_toward_raw_weights_by_momentum():
+    """The exact formula this exists to implement (docs/MANUAL.md S12.29,
+    matching the SpaceNet-8 5th-place solution's own convention): ema =
+    ema * (1 - momentum) + raw * momentum. Verified numerically, not just
+    that it changes -- a wrong blend direction or factor would still
+    "change the weights" but score wrong on this test."""
+    model = DualAxisGeoFormer(_tiny_separate_head_config())
+    ema_state = ema_init(model)
+    # Perturb the raw model so ema_state (a separate clone) and the model's
+    # live weights genuinely differ -- otherwise this test can't tell a
+    # correct blend from a no-op.
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(1.0)
+
+    ema_before = ema_state["flood_head.weight"].clone()
+    raw_now = model.state_dict()["flood_head.weight"].clone()
+    momentum = 0.1
+    ema_update(ema_state, model, momentum)
+    expected = ema_before * (1 - momentum) + raw_now * momentum
+    assert torch.allclose(ema_state["flood_head.weight"], expected, atol=1e-6)
+
+
+def test_ema_init_is_an_independent_clone_not_a_reference():
+    """A shared reference would make ema_state silently track the live
+    model instead of lagging behind it -- the entire point of EMA."""
+    model = DualAxisGeoFormer(_tiny_separate_head_config())
+    ema_state = ema_init(model)
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(5.0)
+    assert not torch.allclose(ema_state["flood_head.weight"], model.state_dict()["flood_head.weight"])
+
+
+def test_ema_update_copies_integer_buffers_instead_of_blending():
+    """num_batches_tracked (a BatchNorm buffer, integer dtype) must track
+    the raw model exactly, not get averaged -- an averaged step COUNT
+    (e.g. 3.7) is meaningless, unlike an averaged float weight."""
+    model = DualAxisGeoFormer(_tiny_separate_head_config())
+    ema_state = ema_init(model)
+    tracked_keys = [k for k, v in model.state_dict().items() if not torch.is_floating_point(v)]
+    assert tracked_keys, "test setup: this model should have at least one non-float buffer (e.g. BatchNorm's num_batches_tracked)"
+    with torch.no_grad():
+        model.state_dict()[tracked_keys[0]].add_(7)
+    ema_update(ema_state, model, momentum=0.01)
+    assert torch.equal(ema_state[tracked_keys[0]], model.state_dict()[tracked_keys[0]])
+
+
 if __name__ == "__main__":
     test_val_loss_metric_matches_prior_behavior()
     test_mean_f1_prefers_broad_detection_over_lower_loss()
@@ -120,4 +168,7 @@ if __name__ == "__main__":
     test_none_entries_are_excluded_from_the_average()
     test_no_classes_seen_yet_scores_as_worst_possible()
     test_reinit_flood_head_changes_only_the_flood_head()
+    test_ema_update_moves_toward_raw_weights_by_momentum()
+    test_ema_init_is_an_independent_clone_not_a_reference()
+    test_ema_update_copies_integer_buffers_instead_of_blending()
     print("All tests passed.")

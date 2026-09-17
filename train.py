@@ -105,6 +105,28 @@ def checkpoint_score(metric: str, val_loss: float, f1_final: dict) -> float:
     raise ValueError(f"Unknown --checkpoint-metric '{metric}'")
 
 
+def ema_init(model) -> dict:
+    """A fresh EMA shadow state, a plain CPU-agnostic clone of the model's
+    current weights -- called once at the start of training (or on resume,
+    from the just-loaded raw weights, if the checkpoint predates EMA)."""
+    return {k: v.clone() for k, v in model.state_dict().items()}
+
+
+def ema_update(ema_state: dict, model, momentum: float) -> None:
+    """In-place: ema = ema * (1 - momentum) + raw_weights * momentum.
+    Integer buffers (e.g. BatchNorm's num_batches_tracked) are copied
+    directly rather than blended -- an averaged step COUNT is meaningless,
+    unlike an averaged floating-point weight or running statistic."""
+    raw_state = model.state_dict()
+    with torch.no_grad():
+        for k, ema_v in ema_state.items():
+            raw_v = raw_state[k]
+            if torch.is_floating_point(ema_v):
+                ema_v.mul_(1 - momentum).add_(raw_v, alpha=momentum)
+            else:
+                ema_v.copy_(raw_v)
+
+
 def reinit_flood_head(model, optimizer) -> None:
     """Replace model.flood_head's weights with a fresh nn.Conv2d init
     (same as a brand-new model's flood_head would get) and drop Adam's
@@ -343,6 +365,22 @@ def main():
                          "unset -- same as before this flag existed. A higher beta specifically "
                          "for flood pushes harder against missing flooded pixels without changing "
                          "how the structure loss weights building/road/background.")
+    p.add_argument("--ema-momentum", type=float, default=None,
+                    help="Exponential moving average of model weights: after every optimizer "
+                         "step, ema = ema * (1 - momentum) + raw_weights * momentum. The EMA "
+                         "weights (not the raw ones) are what validation/checkpoint-selection "
+                         "actually evaluates, and what get saved as the 'production' weights "
+                         "(checkpoint_utils.load_checkpoint_model prefers ema_state when "
+                         "present). None (default) disables EMA entirely -- exact prior "
+                         "behavior. Motivated by real, external evidence (docs/MANUAL.md "
+                         "S12.29): the SpaceNet-8 competition's own 5th-place solution "
+                         "(github.com/motokimura/spacenet8_solution_5th-place) reports the "
+                         "exact same flood-detection instability this project found (S12.17- "
+                         "S12.28) -- 'the validation metric varied significantly from epoch to "
+                         "epoch' -- and used EMA (momentum 2e-3) specifically to mitigate it. "
+                         "Typical values are small, e.g. 0.002-0.01 -- a small momentum means "
+                         "the EMA changes slowly, averaging out epoch-to-epoch noise/oscillation "
+                         "rather than tracking every collapse-and-recover swing.")
     p.add_argument("--reinit-flood-head", action="store_true",
                     help="--resume + --separate-flood-head only: after loading the checkpoint, "
                          "reinitialize ONLY model.flood_head's own weights (fresh nn.Conv2d init) "
@@ -492,6 +530,16 @@ def main():
                   f"value that isn't comparable.")
         print(f"Resumed from {args.resume} at epoch {start_epoch}, lr reset to {args.lr:.2e}")
 
+    ema_state = None
+    if args.ema_momentum is not None:
+        if args.resume and ckpt.get("ema_state") is not None:
+            ema_state = {k: v.clone() for k, v in ckpt["ema_state"].items()}
+            print(f"Resumed EMA state from {args.resume} (ema_momentum={args.ema_momentum})")
+        else:
+            ema_state = ema_init(model)
+            reason = "checkpoint predates EMA" if args.resume else "fresh model"
+            print(f"EMA enabled (momentum={args.ema_momentum}), initialized fresh from {reason}")
+
     # T_max is the REMAINING epoch count, not args.epochs -- a fresh
     # CosineAnnealingLR built with T_max=args.epochs on a resume would anneal
     # as if starting from epoch 0, reaching 0 far later than --epochs actually
@@ -550,10 +598,23 @@ def main():
             loss = compute_loss(out, mask)
             loss.backward()
             optimizer.step()
+            if ema_state is not None:
+                ema_update(ema_state, model, args.ema_momentum)
             train_loss_sum += loss.item()
             n_batches += 1
         scheduler.step()
         train_loss = train_loss_sum / max(1, n_batches)
+
+        # Validate against the EMA weights, not the raw ones being trained --
+        # the whole point (docs/MANUAL.md S12.29) is a smoothed, less noisy
+        # signal for both the printed/logged metrics and checkpoint
+        # selection. Swap the EMA weights in for eval, then restore the raw
+        # ones so the NEXT epoch's training resumes from where the optimizer
+        # actually left off, not from the smoothed snapshot.
+        raw_state_for_restore = None
+        if ema_state is not None:
+            raw_state_for_restore = {k: v.clone() for k, v in model.state_dict().items()}
+            model.load_state_dict(ema_state)
 
         model.eval()
         val_loss_sum, n_val_batches = 0.0, 0
@@ -569,6 +630,9 @@ def main():
         f1_final = acc.f1()
         coverage = acc.coverage_report()
         dt = time.time() - t0
+
+        if raw_state_for_restore is not None:
+            model.load_state_dict(raw_state_for_restore)
 
         def _fmt(c):
             f1v = f1_final[c]
@@ -620,6 +684,7 @@ def main():
             # (real_image_demo.py's caption used to hardcode "synthetic data
             # only" regardless of what checkpoint was actually passed in).
             "data_source": args.data_dir if args.data_dir else "synthetic",
+            "ema_state": ema_state, "ema_momentum": args.ema_momentum,
         }
         torch.save(ckpt_payload, ckpt_dir / "last.pt")
         score = checkpoint_score(args.checkpoint_metric, val_loss, f1_final)

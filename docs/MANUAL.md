@@ -1684,6 +1684,69 @@ collapse) and is this project's best real result to date, honestly
 reported with its own limitation: it is a peak the training run passed
 through, not a state it converged to and stayed at.
 
+### 12.29 External validation, and a genuinely new lever: EMA of model weights
+
+Before assuming S12.28's instability was specific to this project's own
+implementation, checked the actual SpaceNet-8 competition's public
+winner writeups (spacenet.ai/sn8-challenge, and
+github.com/motokimura/spacenet8_solution_5th-place, a real 5th-place
+competition solution with its methodology published). Real, directly
+relevant finding: a top-5 team on the SAME dataset, with a genuinely
+different architecture (Siamese U-Net, not GeoFormer's MaxViT/grid-
+attention design), reports the exact same symptom this project spent
+S12.17-S12.28 diagnosing -- their own words: **"the validation metric
+varied significantly from epoch to epoch"** for flood detection,
+despite their own mitigations. This is real, external confirmation
+that flood-detection instability on this exact dataset is a known,
+genuinely hard problem, not a bug or a modeling mistake unique to this
+project's implementation -- valuable both as a sanity check and as a
+citable point for the thesis's honesty about what's actually solved
+vs. what's still an open, real limitation of the underlying task.
+
+Their specific mitigation, not yet tried here: **EMA (exponential
+moving average) of model weights**, momentum 2e-3, applied every
+epoch. Implemented as `--ema-momentum` in `train.py`: after every
+optimizer step, `ema = ema * (1 - momentum) + raw_weights * momentum`
+(standalone `ema_init`/`ema_update` functions, unit-tested for the
+exact blend formula, for cloning-not-referencing the raw weights, and
+for copying rather than blending integer buffers like BatchNorm's
+`num_batches_tracked`). Validation and checkpoint SELECTION run against
+the EMA weights, not the raw training ones -- the raw weights keep
+training normally each epoch (EMA is swapped in only for the
+validation pass, then swapped back out), and `checkpoint_utils.
+load_checkpoint_model` prefers `ema_state` over `model_state` by
+default so every inference consumer (`demo.py`, `evaluate.py`,
+`serve.py`, `dashboard/inference.py`) benefits automatically. `None`
+(default) disables EMA entirely -- exact prior behavior, unaffected.
+
+**Why this is a plausible fix for THIS project's specific failure
+mode, not just a generic trick to try**: S12.17-S12.28 characterized
+the collapse as the flood head's raw weights swinging into a
+saturated, always-predicts-background state after several epochs of
+real (if noisy) learning. EMA doesn't prevent the raw weights from
+still swinging -- but the EMA snapshot, updated slowly (small
+momentum), lags behind and averages across exactly that kind of swing,
+so even if the raw weights collapse, the EMA weights (which is what
+actually gets evaluated, checkpointed, and used for inference) may
+not, as long as the collapse doesn't persist long enough to drag the
+slow-moving average down with it. Untested claim, not yet a result --
+v13 (next) is the real test.
+
+Verified: 3 new unit tests (blend formula correctness, independent
+clone not a reference, integer-buffer handling) plus an end-to-end
+smoke test -- trained 2 synthetic epochs with `--ema-momentum 0.1`,
+resumed for a 3rd epoch and confirmed EMA state round-trips through
+`--resume` correctly, and confirmed `load_checkpoint_model` loads the
+EMA weights by default (`prefer_ema=False` recovers the raw ones).
+61 tests passing overall.
+
+**Also fixed while implementing this**: the local dashboard's live
+detection (added this session) defaulted to `checkpoints/best.pt`,
+which is NOT this project's actual best real result -- that's
+`checkpoints_v12/best.pt` (S12.28). The dashboard was silently serving
+predictions from a weaker, older checkpoint than the one this project
+actually has. Fixed by pointing the default at the real best checkpoint.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

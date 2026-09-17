@@ -32,12 +32,24 @@ from model import DualAxisGeoFormer, GeoFormerConfig
 from baseline import SN8Baseline
 
 
-def load_checkpoint_model(checkpoint_path: str | Path, device: str | torch.device = "cpu") -> tuple[nn.Module, dict]:
+def load_checkpoint_model(checkpoint_path: str | Path, device: str | torch.device = "cpu",
+                           prefer_ema: bool = True) -> tuple[nn.Module, dict]:
     """Loads a checkpoint saved by train.py and returns (model, checkpoint_dict).
 
     The returned model is already in eval() mode with weights loaded. The
     raw checkpoint dict is returned too, for callers that want
     epoch/val_loss/model_type for logging.
+
+    prefer_ema (default True): if the checkpoint was trained with
+    --ema-momentum (docs/MANUAL.md S12.29), load the EMA-smoothed weights
+    (ckpt["ema_state"]) instead of the raw training weights
+    (ckpt["model_state"]) -- the EMA weights are the ones validation/
+    checkpoint-selection actually scored, and were trained specifically to
+    mitigate the flood-detection instability S12.17-S12.28 diagnosed, so
+    every inference consumer (demo.py, evaluate.py, serve.py,
+    dashboard/inference.py) benefits automatically without its own
+    changes. A checkpoint with no ema_state (EMA wasn't used, or predates
+    this feature) falls back to model_state either way -- unaffected.
     """
     ckpt = torch.load(checkpoint_path, map_location=device)
     model_type = ckpt.get("model_type", "geoformer")  # older checkpoints predate this field
@@ -51,6 +63,7 @@ def load_checkpoint_model(checkpoint_path: str | Path, device: str | torch.devic
     else:
         raise ValueError(f"Unknown model_type '{model_type}' in checkpoint {checkpoint_path}")
 
-    model.load_state_dict(ckpt["model_state"])
+    state = ckpt.get("ema_state") if (prefer_ema and ckpt.get("ema_state") is not None) else ckpt["model_state"]
+    model.load_state_dict(state)
     model.to(device).eval()
     return model, ckpt
