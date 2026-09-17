@@ -1121,8 +1121,34 @@ Training restarted a ninth time (`training_log_geoformer_801_v9.csv`)
 dropping the focal term back to its default (`focal_gamma=1.0`, given
 S12.15's negative result) and adding `--augment` to the rest of the
 stack (pretrained backbone, oversampling, class-weighted loss, backbone
-freezing, `min_f1` checkpoint selection). Results appended here as real
-epochs land.
+freezing, `min_f1` checkpoint selection).
+
+**First 3 epochs, real and mixed**:
+
+| epoch | building F1 (cov) | road F1 (cov) | flooded F1 (cov) |
+|---|---|---|---|
+| 1 | 0.365 (81/87) | 0.209 (86/87) | 0.069 (86/87) |
+| 2 | 0.432 (52/87) | 0.268 (86/87) | **0.187 (80/87)** — best flooded coverage of any run so far |
+| 3 | 0.000 (0/87) | 0.295 (82/87) | 0.000 (0/87) |
+
+Augmentation improved epoch-2 quality specifically (`flooded`'s best F1
+AND best coverage of the entire project, beating v5's epoch-2 0.144 and
+v7's epoch-1 0.137) but did **not** delay or prevent the epoch-3 collapse
+itself — same timing as every from-scratch-augmentation run before it.
+Read plainly: augmentation appears to raise the ceiling of what the
+model reaches before collapsing, without addressing why it collapses at
+all. Consistent with, not contradicting, the S12.10/S12.13 synthesis
+that the joint 4-way softmax's class competition is the actual
+mechanism -- better features (pretrained backbone) and better-conditioned
+training (augmentation) both raise the peak; neither has yet changed
+whether the peak holds.
+
+`docs/EXTERNAL_DATA_PLAN.md` names the next data-side lever (external
+building-footprint data) along with explicit trigger conditions for when
+to actually build it -- not now, since S12.14's architecture-level fix
+(a separate flood head) hasn't been tried yet and would need to be ruled
+out first before concluding this is a data-volume problem rather than an
+architecture one.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
