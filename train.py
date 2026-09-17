@@ -219,6 +219,13 @@ def main():
                          "controls how OFTEN a rare-class tile is seen, this controls how much the "
                          "LOSS cares about that class once it is -- see docs/MANUAL.md S12.7-S12.8 "
                          "for why oversampling alone didn't prevent the building/flooded collapse.")
+    p.add_argument("--focal-gamma", type=float, default=1.0,
+                    help="Focal Tversky Loss exponent (Abraham & Khan 2018): raises each class's "
+                         "(1 - Tversky index) to the power 1/gamma, concentrating gradient on pixels "
+                         "the model still gets wrong within a class -- complements --class-weights "
+                         "(which reweights classes against each other) rather than replacing it. "
+                         "1.0 (default) is the identity power, exact original behavior. Typical "
+                         "useful range 1.0-3.0. See docs/MANUAL.md S12.14-S12.15.")
     p.add_argument("--synthetic-train-size", type=int, default=64)
     p.add_argument("--synthetic-val-size", type=int, default=16)
     p.add_argument("--num-workers", type=int, default=0,
@@ -305,8 +312,10 @@ def main():
                               f"(background,building,road,flooded), got {len(class_weights)}: {args.class_weights}")
         print(f"Loss class weights: background={class_weights[0]} building={class_weights[1]} "
               f"road={class_weights[2]} flooded={class_weights[3]}")
+    if args.focal_gamma != 1.0:
+        print(f"Focal Tversky gamma={args.focal_gamma} (concentrates loss on still-hard pixels within each class)")
     loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES,
-                           class_weights=class_weights)
+                           class_weights=class_weights, focal_gamma=args.focal_gamma)
 
     start_epoch = 0
     ckpt_dir = Path(args.checkpoint_dir)

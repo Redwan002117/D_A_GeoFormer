@@ -93,10 +93,54 @@ def test_class_weights_wrong_length_raises():
         TverskyLoss(class_weights=[1.0, 2.0])  # only 2 entries for num_classes=4
 
 
+def test_focal_gamma_one_matches_original_behavior():
+    """gamma=1.0 (default) must be the exact identity power -- byte-for-byte
+    the pre-focal loss, so existing callers/tests are unaffected."""
+    torch.manual_seed(2)
+    logits = torch.randn(2, 4, 16, 16)
+    target = torch.randint(0, 4, (2, 16, 16))
+    plain = TverskyLoss()(logits, target).item()
+    explicit_gamma_one = TverskyLoss(focal_gamma=1.0)(logits, target).item()
+    assert abs(plain - explicit_gamma_one) < 1e-6
+
+
+def test_focal_gamma_raises_loss_for_a_partially_wrong_prediction():
+    """The whole point of the focal term: gamma > 1 should score a
+    partially-wrong prediction (moderate per-class Tversky index, neither
+    perfect nor total failure) worse than gamma=1 does, since
+    (1-TI)^(1/gamma) > (1-TI) when 0 < (1-TI) < 1 and gamma > 1."""
+    target = torch.zeros(1, 8, 8, dtype=torch.long)
+    target[0, :4, :] = 1  # half building, half background
+
+    # Confident but imperfect: gets most of the building region right,
+    # a quarter of it wrong -- a genuine partial-credit case, not 0 or 1.
+    logits = torch.zeros(1, 4, 8, 8)
+    logits[:, 0] = 5.0
+    logits[0, 1, :3, :] = 8.0  # override: 3/4 rows of building correctly predicted
+
+    plain = TverskyLoss(focal_gamma=1.0)(logits, target).item()
+    focal = TverskyLoss(focal_gamma=2.0)(logits, target).item()
+    assert focal > plain, (
+        f"Focal (gamma=2.0) should score a partially-wrong prediction worse than "
+        f"plain Tversky (gamma=1.0): plain={plain}, focal={focal}"
+    )
+
+
+def test_focal_gamma_must_be_positive():
+    import pytest
+    with pytest.raises(ValueError, match="focal_gamma"):
+        TverskyLoss(focal_gamma=0.0)
+    with pytest.raises(ValueError, match="focal_gamma"):
+        TverskyLoss(focal_gamma=-1.0)
+
+
 if __name__ == "__main__":
     test_loss_is_near_zero_for_a_perfect_prediction()
     test_loss_is_bounded_between_zero_and_one()
     test_beta_greater_than_alpha_penalizes_false_negatives_more()
     test_class_weights_none_matches_uniform_mean()
     test_class_weights_upweight_a_poorly_predicted_rare_class()
+    test_focal_gamma_one_matches_original_behavior()
+    test_focal_gamma_raises_loss_for_a_partially_wrong_prediction()
+    test_focal_gamma_must_be_positive()
     print("All tests passed.")

@@ -1036,6 +1036,32 @@ mechanism above rather than working around it:
    converging) but cheapest to just try given how fast a good result
    appeared last time (2 epochs, not 100+).
 
+### 12.15 Acting on item 3: Focal Tversky loss
+
+v7 was stopped after 10 epochs -- ten straight of `building`/`flooded`
+collapse, and `road` itself starting to degrade (F1 0.394 -> 0.182,
+coverage dropping to 41/87 at epoch 10), a genuinely worse trend than
+letting it continue was likely to reverse on its own.
+
+Implemented item 3 from S12.14: `TverskyLoss` gained an optional
+`focal_gamma` parameter (`(1 - TI) ** (1/gamma)` per class, applied
+before the existing `class_weights` averaging -- Abraham & Khan 2018).
+Where `class_weights` reweights which CLASS the loss prioritizes, this
+additionally reweights which PIXELS within that class it prioritizes,
+concentrating gradient on ones the model still gets wrong rather than
+ones it's already confident about -- a genuinely different lever than
+anything tried so far, not a rename of an existing one. `focal_gamma=1.0`
+(default) is the identity power, exact prior behavior, verified by test.
+`train.py --focal-gamma` wires it through. 3 new regression tests,
+including one that isolates the focal term's effect on a genuine
+partial-credit prediction (neither perfect nor total failure), where the
+difference actually shows up.
+
+Training restarted an eighth time (`training_log_geoformer_801_v8.csv`)
+combining every fix so far plus `--focal-gamma 2.0` (the original paper's
+typical range is 1-3; 2.0 is the middle of it, not yet tuned against this
+specific problem). Results appended here as real epochs land.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 class TverskyLoss(nn.Module):
     def __init__(self, alpha: float = 0.3, beta: float = 0.7, smooth: float = 1.0, num_classes: int = 4,
-                 class_weights: list[float] | None = None):
+                 class_weights: list[float] | None = None, focal_gamma: float = 1.0):
         """
         alpha weights false positives, beta weights false negatives.
         beta > alpha (default 0.7 / 0.3) means the loss is penalized more
@@ -41,6 +41,22 @@ class TverskyLoss(nn.Module):
         self.beta = beta
         self.smooth = smooth
         self.num_classes = num_classes
+        # Focal Tversky Loss (Abraham & Khan 2018): raising (1 - TI) to the
+        # power 1/gamma additionally down-weights pixels the model already
+        # gets right within a class, concentrating gradient on the hard
+        # ones -- complementary to class_weights above (which reweights
+        # CLASSES against each other), not a replacement for it. gamma=1.0
+        # (default) is the identity power -- exact original behavior, so
+        # existing callers/tests are unaffected unless they opt in.
+        # gamma > 1 sharpens the focus on hard pixels; typical range 1-3
+        # per the original paper. Untried before this project's own
+        # building/flooded collapse (docs/MANUAL.md S12.13-S12.14) --
+        # class_weights alone reweights which class the loss prioritizes,
+        # this additionally reweights which PIXELS within that class it
+        # prioritizes, a genuinely different lever.
+        if focal_gamma <= 0:
+            raise ValueError(f"focal_gamma must be > 0, got {focal_gamma}")
+        self.focal_gamma = focal_gamma
         if class_weights is not None:
             if len(class_weights) != num_classes:
                 raise ValueError(f"class_weights has {len(class_weights)} entries, expected {num_classes}")
@@ -59,7 +75,7 @@ class TverskyLoss(nn.Module):
         fn = ((1 - probs) * target_onehot).sum(dim=dims)
 
         tversky = (tp + self.smooth) / (tp + self.alpha * fp + self.beta * fn + self.smooth)
-        per_class_loss = 1.0 - tversky
+        per_class_loss = (1.0 - tversky) ** (1.0 / self.focal_gamma)
         if self.class_weights is not None:
             weights = self.class_weights.to(per_class_loss.device)
             return (per_class_loss * weights).sum() / weights.sum()
