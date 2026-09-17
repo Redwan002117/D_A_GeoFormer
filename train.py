@@ -171,7 +171,15 @@ def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
         # same side of train/val forever -- see SpaceNet8Dataset.split's
         # docstring for the full story of what this actually broke.
         train_idx, val_idx = full.split(val_fraction=0.1)
-        train_ds = torch.utils.data.Subset(full, train_idx)
+        # A second dataset instance (same index.json, cheap to parse twice)
+        # rather than a flag flipped on the shared one -- val must keep
+        # seeing each tile in its one real orientation every epoch, or
+        # held-out numbers stop being comparable epoch to epoch. Sharing
+        # one instance would mean either both splits augment or neither
+        # does; this keeps them independently controlled.
+        train_source = SpaceNet8Dataset(args.data_dir, image_size=args.image_size, augment=args.augment) \
+            if args.augment else full
+        train_ds = torch.utils.data.Subset(train_source, train_idx)
         val_ds = torch.utils.data.Subset(full, val_idx)
 
         if args.oversample_rare_classes:
@@ -265,6 +273,12 @@ def main():
                          "more often per epoch than their raw prevalence. Targets the "
                          "building/flooded total-collapse finding in docs/MANUAL.md S12.3-S13 "
                          "-- val stays unweighted so evaluation numbers stay honest.")
+    p.add_argument("--augment", action="store_true",
+                    help="Real data only (--data-dir): random flips + 90-degree rotations on the "
+                         "TRAIN split (pre/post/mask transformed identically, val untouched). "
+                         "Satellite imagery has no canonical orientation -- this project's real-data "
+                         "training had no geometric augmentation at all before this flag existed. "
+                         "See docs/MANUAL.md S12.16.")
     p.add_argument("--freeze-backbone-epochs", type=int, default=0,
                     help="geoformer + --pretrained-backbone only: freeze the pretrained backbone's "
                          "weights for this many epochs before unfreezing. Standard transfer-learning "

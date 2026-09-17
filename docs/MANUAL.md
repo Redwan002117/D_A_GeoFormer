@@ -1060,7 +1060,69 @@ difference actually shows up.
 Training restarted an eighth time (`training_log_geoformer_801_v8.csv`)
 combining every fix so far plus `--focal-gamma 2.0` (the original paper's
 typical range is 1-3; 2.0 is the middle of it, not yet tuned against this
-specific problem). Results appended here as real epochs land.
+specific problem).
+
+**Result, real and negative**: `focal_gamma=2.0` collapsed FASTER than
+any prior configuration -- `building` and `flooded` both fully gone
+(0.000, zero coverage) by epoch 2-3, compared to epoch 3-4 in every
+config without it.
+
+| epoch | building F1 (cov) | road F1 (cov) | flooded F1 (cov) |
+|---|---|---|---|
+| 1 | 0.420 (78/87) | 0.295 (85/87) | 0.137 (85/87) |
+| 2 | 0.002 (6/87) | 0.305 (80/87) | 0.000 (0/87) |
+| 3 | 0.000 (0/87) | 0.366 (80/87) | 0.000 (0/87) |
+
+A plausible mechanism, stated as reasoning rather than proven: the focal
+term's whole design amplifies gradient on pixels a model is already
+struggling with -- exactly the collapsed classes' own pixels, once they
+start slipping. Instead of pulling the model back toward predicting
+them, that extra gradient magnitude may have pushed it faster toward the
+same degenerate background+road-only solution the un-focused loss
+reaches more slowly. Stopped after 3 epochs rather than let a
+demonstrably-worse trend continue -- this is useful negative evidence
+for the next attempt (a lower gamma, or focal weighting applied only to
+the ALREADY-boosted classes rather than uniformly across all four), not
+a dead end to just retry unchanged.
+
+### 12.16 Geometric augmentation (D4): a genuinely untried lever, not a variant of one already tried
+
+Every configuration attempted so far (v1-v8) shared one thing in common:
+**zero data augmentation**. Every real tile was shown to the model in
+exactly one fixed orientation, every epoch, for the project's entire
+history. Satellite/aerial imagery has no canonical "up" -- a building
+rotated 90 degrees is still a building, a flooded road mirrored is still
+a flooded road -- so this was real, unused headroom, and a genuinely
+different kind of lever than anything tried in S12.5-S12.15 (all of
+which changed how the loss or sampler weighted existing tiles, never
+what the tiles themselves looked like).
+
+`dataset.py`'s `SpaceNet8Dataset` gained `augment: bool = False` (default
+preserves exact prior behavior). When enabled, `_augment_tile()` applies
+a random dihedral-group (D4) transform -- horizontal flip, vertical
+flip, and a 0/90/180/270-degree rotation, each independently chosen --
+identically to the pre-event image, post-event image, AND mask, so the
+three stay spatially aligned. The mask specifically uses NEAREST
+resampling on rotation (not left to PIL's default for its image mode),
+since any interpolation between adjacent class indices would fabricate
+a label value that was never in the real GeoJSON data. `train.py
+--augment` wires it through -- a second `SpaceNet8Dataset` instance
+backs the TRAIN split only (val keeps seeing each tile in its one real
+orientation, so held-out numbers stay comparable epoch to epoch;
+sharing one instance between both splits was rejected specifically to
+avoid coupling that choice). 3 new regression tests verify the
+transform preserves image size, applies identically across all three
+images (checked via a corner marker present in all three, asserted to
+land in the same output coordinates regardless of which random
+transform got picked, run across 30 trials to exercise every code
+path), and never introduces a mask value that wasn't in the original.
+
+Training restarted a ninth time (`training_log_geoformer_801_v9.csv`)
+dropping the focal term back to its default (`focal_gamma=1.0`, given
+S12.15's negative result) and adding `--augment` to the rest of the
+stack (pretrained backbone, oversampling, class-weighted loss, backbone
+freezing, `min_f1` checkpoint selection). Results appended here as real
+epochs land.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 

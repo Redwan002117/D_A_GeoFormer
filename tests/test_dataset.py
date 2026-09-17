@@ -6,9 +6,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pytest
+import random
 
-from dataset import SpaceNet8Dataset, SyntheticFloodDataset
+import numpy as np
+import pytest
+from PIL import Image
+
+from dataset import SpaceNet8Dataset, SyntheticFloodDataset, _augment_tile
 
 
 def _make_fake_index(tmp_path, tile_ids, class_pixel_counts=None):
@@ -112,6 +116,56 @@ def test_class_presence_weights_only_covers_requested_indices(tmp_path):
     weights = ds.class_presence_weights([1])  # only tile_1, a building tile
     assert len(weights) == 1
     assert weights[0] == 2.0  # default boost_building
+
+
+def _marker_tile(size=16):
+    """A pre/post/mask triplet with a unique marker in the top-left
+    corner, distinguishable from the rest -- so a test can tell WHERE
+    the corner ended up after a transform, not just that pixels moved."""
+    pre = Image.new("RGB", (size, size), (10, 10, 10))
+    post = Image.new("RGB", (size, size), (20, 20, 20))
+    mask = Image.new("L", (size, size), 0)
+    for img, marker in ((pre, (255, 0, 0)), (post, (0, 255, 0))):
+        img.paste(marker, (0, 0, 3, 3))
+    mask.paste(3, (0, 0, 3, 3))  # class 3 (flooded) marks the same corner
+    return pre, post, mask
+
+
+def test_augment_tile_preserves_size():
+    pre, post, mask = _marker_tile(size=20)
+    a_pre, a_post, a_mask = _augment_tile(pre, post, mask)
+    assert a_pre.size == a_post.size == a_mask.size == (20, 20)
+
+
+def test_augment_tile_transforms_pre_post_mask_identically():
+    """The whole point of this function: whatever transform is applied,
+    it must be the SAME one on all three images, or pre/post/mask go out
+    of spatial alignment -- a genuinely corrupting bug, not a cosmetic one.
+    Run many trials (random.random()/choice control which transform is
+    picked) so every code path gets exercised across the run."""
+    random.seed(0)
+    for _ in range(30):
+        pre, post, mask = _marker_tile(size=16)
+        a_pre, a_post, a_mask = _augment_tile(pre, post, mask)
+        pre_marker = np.argwhere(np.array(a_pre)[:, :, 0] == 255)  # red channel, pre's marker
+        post_marker = np.argwhere(np.array(a_post)[:, :, 1] == 255)  # green channel, post's marker
+        mask_marker = np.argwhere(np.array(a_mask) == 3)
+        # All three markers must have landed in exactly the same set of
+        # pixel coordinates after whatever random transform was applied.
+        assert set(map(tuple, pre_marker)) == set(map(tuple, post_marker)) == set(map(tuple, mask_marker))
+
+
+def test_augment_tile_mask_values_stay_valid_class_indices():
+    """A mask must never gain a class value that wasn't in the original --
+    rotate()'s default resampling for an integer-mode image can otherwise
+    introduce values between adjacent classes at the rotation's edges,
+    fabricating a label that was never in the real data."""
+    random.seed(1)
+    _, _, mask = _marker_tile(size=16)
+    original_values = set(np.array(mask).flatten().tolist())
+    for _ in range(20):
+        _, _, a_mask = _augment_tile(*_marker_tile(size=16))
+        assert set(np.array(a_mask).flatten().tolist()) <= original_values | {0, 3}
 
 
 if __name__ == "__main__":

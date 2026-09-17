@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,43 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 NUM_CLASSES = 4  # background, building, road, flooded (building or road)
+
+
+def _augment_tile(pre: Image.Image, post: Image.Image, mask: Image.Image):
+    """Random dihedral-group (D4) transform applied IDENTICALLY to pre,
+    post, and mask, so the three stay spatially aligned.
+
+    WHY: satellite/aerial imagery has no canonical "up" -- north isn't
+    meaningfully different from any other direction for what this model
+    needs to learn (a building looks like a building rotated 90 degrees;
+    a flooded road is still a flooded road mirrored). This project's
+    real-data training had NO geometric augmentation at all before this --
+    every epoch saw each of the 801 tiles in exactly one fixed orientation,
+    which is real, unused headroom for a model that's shown to overfit or
+    collapse on rare classes rather than generalize (see docs/MANUAL.md
+    S12.13-S12.15) -- one physical tile can now teach the model up to 8
+    orientation-equivalent views of the same real content instead of 1.
+
+    `mask` uses NEAREST resampling explicitly (not the PIL default for
+    every mode) -- a mask's pixel values are discrete class indices, and
+    any interpolation between them would fabricate a class index that was
+    never in the original label.
+    """
+    if random.random() < 0.5:
+        pre = pre.transpose(Image.FLIP_LEFT_RIGHT)
+        post = post.transpose(Image.FLIP_LEFT_RIGHT)
+        mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
+    if random.random() < 0.5:
+        pre = pre.transpose(Image.FLIP_TOP_BOTTOM)
+        post = post.transpose(Image.FLIP_TOP_BOTTOM)
+        mask = mask.transpose(Image.FLIP_TOP_BOTTOM)
+    k = random.choice([0, 1, 2, 3])
+    if k:
+        angle = k * 90
+        pre = pre.rotate(angle)
+        post = post.rotate(angle)
+        mask = mask.rotate(angle, resample=Image.NEAREST)
+    return pre, post, mask
 
 
 def _base_tile(size: int, rng: np.random.Generator) -> np.ndarray:
@@ -130,9 +168,16 @@ class SpaceNet8Dataset(Dataset):
     before pointing `--data-dir` at a directory built this way.
     """
 
-    def __init__(self, data_dir: str, image_size: int = 256):
+    def __init__(self, data_dir: str, image_size: int = 256, augment: bool = False):
         self.data_dir = Path(data_dir)
         self.image_size = image_size
+        # Default False -- exact prior behavior for existing callers/tests.
+        # Only meant to be True for a TRAIN split; a validation set must
+        # keep seeing tiles in their one real orientation so held-out
+        # numbers stay comparable epoch to epoch (see train.py, which
+        # builds a second, augment=False instance for val instead of
+        # reusing one instance for both splits).
+        self.augment = augment
         index_path = self.data_dir / "index.json"
         if not index_path.exists():
             raise FileNotFoundError(
@@ -154,6 +199,9 @@ class SpaceNet8Dataset(Dataset):
             (self.image_size, self.image_size))
         mask = Image.open(self.data_dir / entry["mask"]).resize(
             (self.image_size, self.image_size), Image.NEAREST)
+
+        if self.augment:
+            pre, post, mask = _augment_tile(pre, post, mask)
 
         pre_t = torch.from_numpy(np.array(pre)).permute(2, 0, 1).float() / 255.0
         post_t = torch.from_numpy(np.array(post)).permute(2, 0, 1).float() / 255.0
