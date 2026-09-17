@@ -242,7 +242,16 @@ def main():
             f"further (e.g. --epochs {start_epoch + 10})."
         )
 
+    # On --resume, keep the existing log's history instead of starting the
+    # CSV over from this run's first epoch -- otherwise the same --log-csv
+    # path across a resume silently loses everything before start_epoch the
+    # moment this run writes its first row.
     log_rows = []
+    if args.resume and Path(args.log_csv).exists():
+        with open(args.log_csv, newline="") as f:
+            log_rows = list(csv.DictReader(f))
+        print(f"Continuing existing log {args.log_csv} ({len(log_rows)} prior rows)")
+
     class_names = ["background", "building", "road", "flooded"]
 
     for epoch in range(start_epoch, args.epochs):
@@ -295,6 +304,16 @@ def main():
             **{f"val_coverage_{class_names[c]}_pred_images": coverage[c][1] for c in range(NUM_CLASSES)},
             "lr": scheduler.get_last_lr()[0], "seconds": round(dt, 2),
         })
+        # BUG THIS FIXES: the CSV used to be written once, after the whole
+        # epoch loop finished -- so a run killed mid-training (this
+        # environment's OOM kills, repeatedly, this session) lost the entire
+        # log, even though the model checkpoint and dataset index.json both
+        # survive via their own per-step writes. Write it every epoch instead,
+        # same incremental-save philosophy applied consistently.
+        with open(args.log_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(log_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(log_rows)
 
         ckpt_payload = {
             "epoch": epoch, "model_state": model.state_dict(),
@@ -320,11 +339,7 @@ def main():
             torch.save(ckpt_payload, ckpt_dir / "best.pt")
             print(f"  -> new best (val_loss={val_loss:.4f}), saved {ckpt_dir / 'best.pt'}")
 
-    with open(args.log_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(log_rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(log_rows)
-    print(f"\nWrote {args.log_csv}. Best val_loss: {best_val_loss:.4f}. "
+    print(f"\n{args.log_csv} is up to date (written every epoch). Best val_loss: {best_val_loss:.4f}. "
           f"Checkpoints in {ckpt_dir}/ (best.pt, last.pt).")
 
 

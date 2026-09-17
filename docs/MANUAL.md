@@ -474,6 +474,52 @@ complexity vs. clean synthetic shapes) — not primarily a data-volume
 problem, which is a materially different, harder diagnosis than this
 document previously gave.
 
+### 12.4 GeoFormer retrained on the full 801-tile set — road genuinely improves
+
+With the metric fixed, GeoFormer was retrained from its 352-tile checkpoint
+onto the full 801-tile combined dataset. This run hit the OOM-kill pattern
+described in §12.2 **five times in a row** (a session record) — each kill
+recovered from via `--resume`, no progress lost, three real evaluation
+checkpoints captured along the way:
+
+| Epoch | road F1 (corrected metric) | building / flooded |
+|---|---|---|
+| 56 | 0.072 | 0.000 / 0.000 (unchanged throughout) |
+| 64 | 0.159 | 0.000 / 0.000 |
+| 74 | 0.203 | 0.000 / 0.000 |
+
+`road` is genuinely, steadily improving with more training (0.072 → 0.159 →
+0.203) — real learning, not a metric artifact (it has real, non-zero
+prediction coverage throughout, unlike building/flooded). It is still well
+below the baseline's 0.431 at this point; whether GeoFormer would
+eventually close or exceed that gap with more epochs than this environment
+allowed to run in one sitting is genuinely unknown, not implied either way.
+
+**A second real bug found and fixed in the course of this**: the training
+log CSV was only written once, at the very end of the full epoch loop —
+so every one of these five kills silently lost the entire per-epoch log,
+even though the checkpoint (weights) and `real_sn8_dataset_full/index.json`
+both survived via their own incremental writes. `train.py` now writes the
+log after every epoch, the same philosophy applied consistently, and
+`--resume` now loads and continues an existing log instead of restarting
+it — verified with a real train-then-resume test showing one continuous 4-row
+log across two separate process invocations. This is why the table above
+is three hand-captured `evaluate.py` snapshots rather than a training
+curve plot: the curve for epochs 56-74 was already lost to the kills that
+predated this fix.
+
+**On the repeated kills themselves**: five consecutive OOM kills on jobs
+that were already reduced to batch size 1 is a strong, consistent signal
+that this specific machine does not have enough free memory available for
+this workload *right now*, for reasons outside this process's own control
+(free memory was observed fluctuating between ~2.4GB and ~5.3GB across the
+session with no lingering processes of this pipeline's own found after any
+kill). The honest response to that is stopping the retry loop and reporting
+the real, current state — which is what happened — rather than continuing
+to retry the same thing repeatedly on the chance it works. `notebooks/
+train_on_colab.ipynb` sidesteps this entirely for anyone who wants to
+continue this specific run further.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
