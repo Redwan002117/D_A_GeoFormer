@@ -196,7 +196,47 @@ def config():
     """Tells the frontend what this deployment can actually do, so it can
     hide/disable the upload form instead of offering something that will
     fail -- see IS_VERCEL above."""
-    return JSONResponse({"uploads_enabled": not IS_VERCEL})
+    return JSONResponse({"uploads_enabled": not IS_VERCEL, "test_status_enabled": not IS_VERCEL})
+
+
+@app.get("/api/test-status")
+def test_status():
+    """Runs the real pytest suite on demand and reports the real result --
+    genuine test stats, not a cached/fabricated badge. On-demand rather
+    than polled: the suite takes ~10-15s, too slow to run every dashboard
+    refresh tick. Disabled on Vercel (no pytest/torch in that deployment's
+    deliberately lightweight dependency set -- see api/requirements.txt)."""
+    if IS_VERCEL:
+        raise HTTPException(501, "Test status isn't available on this deployment -- run locally.")
+    import re
+    import subprocess
+    import time
+    from datetime import datetime, timezone
+
+    t0 = time.time()
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pytest", "tests/", "-q", "--tb=no"],
+            cwd=str(BASE_DIR), capture_output=True, text=True, timeout=120,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Could not run the test suite: {e}")
+
+    output = result.stdout + result.stderr
+    m = re.search(r"(\d+) passed(?:, (\d+) failed)?", output)
+    passed = int(m.group(1)) if m else None
+    failed = int(m.group(2)) if m and m.group(2) else 0
+    m_failed_only = re.search(r"(\d+) failed", output)
+    if m_failed_only and not m:
+        failed = int(m_failed_only.group(1))
+
+    return JSONResponse({
+        "passed": passed, "failed": failed,
+        "total": (passed or 0) + failed,
+        "exit_code": result.returncode,
+        "duration_seconds": round(time.time() - t0, 1),
+        "ran_at": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 @app.get("/api/dataset")

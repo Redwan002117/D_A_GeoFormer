@@ -128,6 +128,8 @@
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
   .tab-enter { animation: tabRise .28s cubic-bezier(.2,.7,.3,1) both; }
   @keyframes tabRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .flash-update { animation: flashUpdate 1.1s ease; }
+  @keyframes flashUpdate { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 0px transparent; } }
   .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   .card h2 {
     font: 600 12px/1 var(--font-display); text-transform: uppercase; letter-spacing: .08em;
@@ -280,6 +282,16 @@
         <div class="card-head"><h2>Latest run &mdash; F1 trend</h2></div>
         <div class="chart-wrap"><canvas id="overviewChart" height="160"></canvas><div class="chart-tooltip" id="overviewTooltip"></div></div>
         <div class="legend-row" id="overviewLegendRow"></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card wide">
+        <div class="card-head">
+          <h2>Test suite <span class="dim">real pytest run, on demand</span></h2>
+          <button class="primary" id="runTestsBtn" style="padding:6px 14px;font-size:11.5px">Run tests now</button>
+        </div>
+        <div id="testStatusCard"><div class="note">Not run yet this session &mdash; click "Run tests now" for the real, current result.</div></div>
       </div>
     </div>
 
@@ -880,8 +892,99 @@ async function loadConfig() {
       document.getElementById('sampleForm').hidden = true;
       document.getElementById('uploadsDisabledNote').hidden = false;
     }
+    if (!cfg.test_status_enabled) {
+      document.getElementById('runTestsBtn').disabled = true;
+      document.getElementById('testStatusCard').innerHTML =
+        '<div class="note">Test status isn\'t available on this deployment (no pytest/torch here) &mdash; run locally.</div>';
+    }
   } catch (e) { /* older deployment without /api/config -- uploads assumed enabled */ }
 }
+
+document.getElementById('runTestsBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('runTestsBtn');
+  const card = document.getElementById('testStatusCard');
+  btn.disabled = true;
+  card.innerHTML = '<div class="note">Running the real test suite&hellip; (~10-15s)</div>';
+  try {
+    const r = await fetchJSON('/api/test-status');
+    const ok = r.exit_code === 0;
+    card.innerHTML = `
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <span class="pill status-${ok ? 'ok' : 'collapsed'}" style="font-size:12.5px;padding:5px 12px">
+          ${ok ? '✓' : '✗'} ${r.passed}/${r.total} passing
+        </span>
+        <span class="note" style="margin:0">ran in ${r.duration_seconds}s &middot; ${new Date(r.ran_at).toLocaleString()}</span>
+      </div>`;
+    flashUpdated(card);
+  } catch (err) {
+    card.innerHTML = `<div class="note"><span class="flag">Failed to run:</span> ${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ---------------- real-time auto-refresh ---------------- */
+// Epochs land roughly every 6-10 minutes for this project's own training
+// runs, so a 20s poll is responsive without hammering the DB -- and it's
+// cheap: /api/runs and /api/stats/best are both small aggregate queries,
+// and the active run's epoch list only actually changes once real
+// training progress lands (getEpochs' cache is invalidated explicitly
+// below, not on every poll, so an unchanged run costs nothing extra).
+const REFRESH_MS = 20000;
+let lastRefreshAt = Date.now();
+
+function flashUpdated(el) {
+  if (!el) return;
+  el.classList.remove('flash-update'); void el.offsetWidth; el.classList.add('flash-update');
+}
+
+function updateRefreshIndicator() {
+  const secs = Math.round((Date.now() - lastRefreshAt) / 1000);
+  const el = document.getElementById('liveLabel');
+  if (el && el.textContent !== 'offline') el.textContent = `live · updated ${secs}s ago`;
+}
+
+async function refreshTick() {
+  let freshRuns, freshBest;
+  try {
+    [freshRuns, freshBest] = await Promise.all([fetchJSON('/api/runs'), fetchJSON('/api/stats/best').catch(() => null)]);
+    setLive(true);
+  } catch (e) {
+    setLive(false);
+    return;
+  }
+  lastRefreshAt = Date.now();
+
+  // Did the actively-selected run gain a new epoch since the last poll?
+  const activeRow = document.querySelector('#runsTable tbody tr.active');
+  const activeId = activeRow ? activeRow.dataset.runId : null;
+  const before = runsData.find(r => String(r.id) === String(activeId));
+  const after = freshRuns.find(r => String(r.id) === String(activeId));
+  const activeRunGrew = before && after && after.last_epoch !== before.last_epoch;
+
+  runsData = freshRuns;
+  renderRunsTable();
+  if (activeId) document.querySelector(`#runsTable tbody tr[data-run-id="${activeId}"]`)?.classList.add('active');
+  document.getElementById('statRuns').textContent = runsData.length;
+  if (freshBest) { renderHeroStats(freshBest); flashUpdated(document.getElementById('statRow')); }
+  renderActivityFeed();
+  renderQuickView();
+  analyticsRendered = false; // next Analytics visit re-fetches with fresh epoch data
+
+  if (activeRunGrew && activeId) {
+    delete epochsCache[activeId];           // force a real re-fetch, not the stale cache
+    await loadRunCharts(activeId, after.run_name, after.notes);
+    flashUpdated(document.getElementById('tab-training'));
+    if (String(activeId) === String(runsData[runsData.length - 1]?.id)) {
+      getEpochs(activeId).then(rows => renderLatestRunCard(after, rows));
+      flashUpdated(document.getElementById('latestRunCard'));
+    }
+  }
+  loadSamples();
+}
+
+setInterval(refreshTick, REFRESH_MS);
+setInterval(updateRefreshIndicator, 1000);
 
 loadConfig();
 loadRuns();
