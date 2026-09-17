@@ -1562,6 +1562,44 @@ head starts learning under the stronger loss from a non-saturated
 point, instead of v11's mistake of applying the stronger loss to
 weights that had already saturated.
 
+### 12.26 v12 epoch 13: the fresh flood head recovers immediately
+
+v12 resumed from the exact same v10 checkpoint v11 used (building
+F1=0.599, road F1=0.402, flooded collapsed to 0.000), with the same
+stronger flood-specific loss v11 used (`--flood-class-weight 20
+--flood-tversky-beta 0.9`) -- the ONLY difference from v11 is
+`--reinit-flood-head`, giving flood_head fresh weights instead of
+resuming its already-saturated ones.
+
+| | building F1 | road F1 | flooded F1 | flooded coverage |
+|---|---|---|---|---|
+| v11 epoch 13 (saturated head, same stronger loss) | 0.578 | 0.425 | 0.000 | 0/87 |
+| **v12 epoch 13 (fresh head, same stronger loss)** | **0.603** (new project best) | 0.405 | **0.443** | **51/87** |
+
+**Real, immediate recovery.** One epoch after reinitialization, flooded
+F1 is 0.443 with real coverage across 51 of 87 validation images --
+compare v11's IDENTICAL loss configuration producing exactly 0.000
+across 4 full epochs on the same (but saturated) head. This is the
+strongest direct confirmation yet of the diagnostic chain built across
+S12.17 (the collapse is a representational problem, not a dead output
+layer) through S12.24 (a saturated logit has near-zero local gradient
+regardless of loss weight) -- the reinit's whole premise (give the head
+a fresh, non-saturated starting point) produced exactly the outcome
+that premise predicts.
+
+Building also reached a new project-best F1 (0.603), confirming the
+reinit didn't disturb the parts of the checkpoint it wasn't supposed to
+touch (`split_trunk`/`structure_head`/backbone).
+
+**Appropriate caution, not overclaiming from one epoch**: v10 itself
+looked this promising for 7 straight epochs (flooded F1 up to 0.482)
+before collapsing at epoch 8 (S12.22-S12.23). A single strong epoch is
+real, positive evidence, not proof the fresh head won't eventually
+saturate the same way under continued training. Monitoring continues
+past the epoch-8-equivalent point (v12's epoch ~20, i.e. 8 epochs after
+the reinit) before this is called a durable fix rather than a promising
+early sign.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
