@@ -1805,10 +1805,37 @@ for the run after next, in roughly this priority order):
    now hand-tuned `--flood-class-weight` -- lower priority, same family
    as weighting already tried.
 
-**v13's own result** (separate-head + EMA momentum 0.002 + the S12.24-
-S12.25 flood-specific weighting, resumed from v12's best checkpoint)
-is still in progress as of this writing -- reported in the next section
-once real epochs land.
+### 12.31 v13 epochs 17-18: EMA looks genuinely stabilizing so far (early, provisional)
+
+v13 (separate head + EMA momentum 0.002 + the S12.24-S12.25 flood-
+specific weighting, resumed from v12's best checkpoint at epoch 16 --
+so v13's epoch numbering continues at 17) gives the cleanest possible
+comparison: v12 and v13 share the exact same starting weights, same
+loss config, same data, differing ONLY in EMA. Direct comparison at
+the same two epochs:
+
+| epoch | v12 flooded F1 (no EMA) | v13 flooded F1 (EMA) | v12 coverage | v13 coverage |
+|---|---|---|---|---|
+| 17 | 0.430 | **0.518** | 25/87 | 23/87 |
+| 18 | 0.329 (declining) | **0.519** (flat) | 18/87 | 22/87 |
+
+v13 is both higher AND markedly more stable epoch-to-epoch (0.518 ->
+0.519, essentially flat) than v12's declining trajectory (0.430 ->
+0.329, the beginning of the slide that led to v12's epoch-19 collapse)
+at the identical relative point. This is consistent with, and so far
+supports, S12.29's hypothesis: the EMA-smoothed weights (which is what
+gets validated and checkpointed) may not swing into the raw weights'
+oscillation the same way.
+
+**Explicitly not calling this resolved**: v12 itself didn't collapse
+until epoch 19-20 -- two epochs is not enough to know whether EMA
+prevents that collapse or merely delays/smooths its visible symptoms
+by a similar margin to what reinitialization already achieved (S12.25-
+S12.28's own lesson: early, multi-epoch stability has repeatedly looked
+like a fix before, and wasn't, twice). Monitoring continues specifically
+through and past v13's own epoch 19-20 before this gets called
+anything stronger than "a promising, measurably different trajectory
+so far."
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
