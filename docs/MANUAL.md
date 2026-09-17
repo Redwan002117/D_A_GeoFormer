@@ -376,11 +376,103 @@ run one at a time, and lean on the incremental-save design to make
 interruption cheap rather than trying to avoid it.
 
 `baseline.py`'s SN8Baseline (U-Net/ResNet-34, no bi-temporal fusion — the
-literature review's comparison point) is now training on the full 801-tile
-set, resumed through the same kill via `--resume`. See
-`sample_outputs/training_log_baseline_real.csv` for the up-to-date run —
-this is the first genuine baseline-vs-GeoFormer comparison on identical
-real data, not a citation to SN-8's own published numbers.
+literature review's comparison point) trained for 30 epochs on the full
+801-tile set, surviving the same OOM-kill/resume cycle via `--resume`
+(§12.2's own lesson, applied). Results (held-out validation split):
+
+| Class | Baseline F1 (801 tiles) | GeoFormer F1 (352 tiles, §12.1) |
+|---|---|---|
+| background | 0.978 | 0.98 |
+| building | 0.300 | 0.21 |
+| road | 0.348 | 0.19 |
+| flooded | 0.662 | 0.333 |
+
+**Read this table carefully, not as "the baseline wins"**: GeoFormer's
+number here is from the smaller 352-tile run — the baseline has more than
+double the training data. GeoFormer is now training on the same full
+801-tile set (`training_log_geoformer_801.csv`) specifically so this
+comparison can be made on identical data; until that finishes, this table
+is not yet the real Table 2 comparison, only the baseline's own real,
+verified result.
+
+The same suspicious pattern noted in §12.1 recurs here, and is now
+stronger: looking at the actual plotted curve
+(`sample_outputs/training_curve_baseline_801.png`), **both** `flooded`
+(0.662) **and** `building` (0.300) are exactly flat for the entire
+10-epoch window shown, while `road` visibly fluctuates and train_loss
+keeps decreasing the whole time. Two different classes landing on
+bit-identical F1 simultaneously, while a third genuinely varies, is harder
+to wave off as one coincidental boundary-stability case — this needs
+actual investigation (e.g. logging per-epoch prediction masks, not just
+the aggregate F1 number) before the "argmax boundary" explanation should
+be trusted. Recorded here as an open question, explicitly not resolved.
+
+Full-dataset (optimistic, train-included) evaluation of the baseline:
+`background 0.981, building 0.050, road 0.405, flooded 0.741` — note
+building F1 is *lower* here than on the held-out split alone (0.05 vs.
+0.30), an inversion worth noting rather than explaining away; it wasn't
+investigated further given time spent already on this comparison.
+
+### 12.3 CORRECTION — §12.1 and §12.2's flooded/building numbers were a metric artifact
+
+**The "flat line" flagged as unexplained in both §12.1 and §12.2 above
+turned out to have a real cause, and it changes the honest conclusion.**
+Investigated by comparing raw predictions between two nearby checkpoints
+(`checkpoints_baseline/best.pt` epoch 27 vs. `last.pt` epoch 30) on the
+same real validation tiles, then confirmed on 40 random tiles across the
+whole dataset:
+
+**The baseline predicts zero `building` pixels and zero `flooded` pixels
+on every single one of 40 random real tiles checked — including the 27
+tiles that genuinely contain buildings and the 15 that genuinely contain
+flooding.** The reported F1 numbers (0.300 / 0.662) are almost exactly
+what pure class-prevalence arithmetic predicts if the model predicts
+nothing at all: 13/40 tiles lack building in ground truth → 0.325 expected
+vs. 0.300 observed; 25/40 lack flooding → 0.625 expected vs. 0.662
+observed. This is not a coincidence.
+
+**Root cause, now understood**: §9's earlier per-class-F1 fix ("a class
+absent from both prediction and target should score 1.0, not 0.0") is
+correct for a *single* image, but `train.py`/`evaluate.py` were averaging
+that per-image judgment across many images as if it measured overall class
+performance. A model that never predicts a rare class still scores 1.0 on
+every image that happens to lack that class in ground truth too — diluting
+total failure on the images that DO have it into a misleadingly high
+aggregate. Fixed properly in `train.py`'s new `ConfusionAccumulator`:
+raw TP/FP/FN are now summed across the ENTIRE validation pass first, and
+F1 is computed once from those global totals — plus a coverage report
+(`gt_images` vs. `pred_images` per class) that makes total collapse
+visible instead of hidden. `per_class_f1` itself is unchanged and still
+correct for what it actually is: a single-call primitive, now documented
+as unsafe to average across batches. See `tests/test_metrics.py`'s two new
+`ConfusionAccumulator` tests for the regression coverage.
+
+**The corrected, honest picture** (`python evaluate.py`, full 801-tile
+dataset, both models):
+
+| Class | Baseline F1 | GT images | Predicted-in images | GeoFormer F1 (epoch 56, still training) |
+|---|---|---|---|---|
+| background | 0.981 | 801/801 | 801/801 | 0.978 |
+| building | **0.000 — collapsed** | 507/801 | **0/801** | **0.000 — collapsed** |
+| road | 0.431 | 704/801 | 751/801 | 0.072 (early; training continues) |
+| flooded | **0.000 — collapsed** | 198/801 | **0/801** | **0.000 — collapsed** |
+
+**Neither model has learned to detect buildings or flooding on real
+SpaceNet-8 imagery at all.** `road` is the only class either model shows
+genuine, partial success on. The earlier "flooded F1 0.000 → 0.333 → 0.58,
+a real improvement" narrative in §12.1/§12.2 was built on the flawed
+metric and should be read as superseded by this section, not as still
+true alongside it — it is kept above, uncorrected in place, as an honest
+record of the investigation rather than quietly edited away.
+
+**What this actually means for next steps**: more real data (§12.2's 801
+tiles vs. §12's 202) did NOT fix the rare-class collapse — the metric bug
+just made it look like it did. The real open problems are the model
+capacity/training-recipe ones §13 was already gesturing at (class
+imbalance, no pretrained backbone, limited epochs on real photographic
+complexity vs. clean synthetic shapes) — not primarily a data-volume
+problem, which is a materially different, harder diagnosis than this
+document previously gave.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 

@@ -37,14 +37,24 @@ from baseline import SN8Baseline
 
 def per_class_f1(logits: torch.Tensor, target: torch.Tensor, num_classes: int, eps: float = 1e-7):
     """logits: (B,C,H,W), target: (B,H,W). Returns a dict {class_idx: f1}.
+    Correct for a SINGLE call on one batch/image: if a class is genuinely
+    absent from both prediction and target there, that one judgment (F1=1.0,
+    "nothing to find, nothing wrongly found") is right.
 
-    BUG THIS FIXES: when a class is absent from BOTH prediction and target
-    (tp=fp=fn=0 -- e.g. "flooded" on a batch of entirely-dry tiles), the old
-    eps-only formula computed precision=recall=f1=0/(0+eps)=0 -- scoring a
-    correct trivial "there is none of this here" as a total miss. That's
-    backwards: with nothing to find and nothing wrongly found, the class is
-    reported perfect (1.0), not failing. Reported dry-tile "flooded=0.000"
-    metrics before this fix were this bug, not real model failure.
+    BUG THIS DOCSTRING NOW WARNS ABOUT: that per-call correctness does NOT
+    make it safe to call this once per batch across a validation loop and
+    AVERAGE the resulting per-batch F1s together, which is what train.py and
+    evaluate.py used to do. Averaged that way, a rare class that the model
+    never predicts ANYWHERE gets scored 1.0 on every batch where it happens
+    to be absent from ground truth too, diluting real, total failure on the
+    batches where it IS present into a misleadingly high aggregate (verified
+    concretely: a model predicting zero "flooded"/"building" pixels on every
+    one of 40 random real tiles -- including the ~2/3 of tiles that actually
+    contain them -- still averaged to F1 0.66 / 0.30 this way, closely
+    matching pure class-prevalence arithmetic, not genuine recall). Use
+    `ConfusionAccumulator` below for real validation/evaluation reporting;
+    this function stays as a correct single-call primitive and this session's
+    unit tests exercise it as exactly that.
     """
     pred = logits.argmax(dim=1)
     f1s = {}
@@ -61,6 +71,63 @@ def per_class_f1(logits: torch.Tensor, target: torch.Tensor, num_classes: int, e
         recall = tp / (tp + fn + eps)
         f1s[c] = 2 * precision * recall / (precision + recall + eps)
     return f1s
+
+
+class ConfusionAccumulator:
+    """Accumulates raw TP/FP/FN counts (and per-image class coverage) across
+    an entire validation/evaluation pass, so F1 is computed ONCE from the
+    global totals -- not averaged from many small per-batch F1 values. This
+    is the fix for the real bug documented in per_class_f1's docstring
+    above: a corpus-level F1 doesn't get diluted by absent-class batches the
+    way a mean-of-per-batch-F1s does, and it makes total failure on a rare
+    class visible instead of masked."""
+
+    def __init__(self, num_classes: int):
+        self.num_classes = num_classes
+        self.tp = [0] * num_classes
+        self.fp = [0] * num_classes
+        self.fn = [0] * num_classes
+        self.gt_images = [0] * num_classes    # images where this class appears in ground truth
+        self.pred_images = [0] * num_classes  # images where the model predicted this class at all
+        self.n_images = 0
+
+    def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
+        pred = logits.argmax(dim=1)
+        self.n_images += target.shape[0]
+        for c in range(self.num_classes):
+            pred_c, target_c = pred == c, target == c
+            self.tp[c] += (pred_c & target_c).sum().item()
+            self.fp[c] += (pred_c & ~target_c).sum().item()
+            self.fn[c] += (~pred_c & target_c).sum().item()
+            for b in range(target.shape[0]):
+                if target_c[b].any():
+                    self.gt_images[c] += 1
+                if pred_c[b].any():
+                    self.pred_images[c] += 1
+
+    def f1(self, eps: float = 1e-7) -> dict:
+        """Returns {class_idx: f1_or_None}. None means the class never
+        appeared in prediction OR target across the whole pass -- genuinely
+        undefined, not a trivial 1.0 (that per-image judgment is what caused
+        the original bug when aggregated this way)."""
+        result = {}
+        for c in range(self.num_classes):
+            tp, fp, fn = self.tp[c], self.fp[c], self.fn[c]
+            if tp == 0 and fp == 0 and fn == 0:
+                result[c] = None
+                continue
+            precision = tp / (tp + fp + eps)
+            recall = tp / (tp + fn + eps)
+            result[c] = 2 * precision * recall / (precision + recall + eps)
+        return result
+
+    def coverage_report(self) -> dict:
+        """{class_idx: (gt_images, pred_images, total_images)} -- the
+        diagnostic that actually catches class collapse: a class present in
+        many ground-truth images but predicted in zero of them is a total
+        failure a bare F1 number can hide."""
+        return {c: (self.gt_images[c], self.pred_images[c], self.n_images)
+                for c in range(self.num_classes)}
 
 
 def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
@@ -196,27 +263,36 @@ def main():
 
         model.eval()
         val_loss_sum, n_val_batches = 0.0, 0
-        f1_accum = {c: 0.0 for c in range(NUM_CLASSES)}
+        acc = ConfusionAccumulator(NUM_CLASSES)
         with torch.no_grad():
             for pre, post, mask in val_loader:
                 pre, post, mask = pre.to(device), post.to(device), mask.to(device)
                 out = model(pre, post)
                 val_loss_sum += loss_fn(out["logits"], mask).item()
                 n_val_batches += 1
-                batch_f1 = per_class_f1(out["logits"], mask, NUM_CLASSES)
-                for c in range(NUM_CLASSES):
-                    f1_accum[c] += batch_f1[c]
+                acc.update(out["logits"], mask)
         val_loss = val_loss_sum / max(1, n_val_batches)
-        f1_mean = {c: f1_accum[c] / max(1, n_val_batches) for c in range(NUM_CLASSES)}
+        f1_final = acc.f1()
+        coverage = acc.coverage_report()
         dt = time.time() - t0
 
-        f1_str = "  ".join(f"{class_names[c]}={f1_mean[c]:.3f}" for c in range(NUM_CLASSES))
+        def _fmt(c):
+            f1v = f1_final[c]
+            if f1v is None:
+                return f"{class_names[c]}=n/a(never seen)"
+            gt_n, pred_n, total_n = coverage[c]
+            flag = "" if (gt_n == 0 or pred_n > 0) else "!COLLAPSED"
+            return f"{class_names[c]}={f1v:.3f}{flag}"
+
+        f1_str = "  ".join(_fmt(c) for c in range(NUM_CLASSES))
         print(f"epoch {epoch + 1:3d}/{args.epochs}  train_loss={train_loss:.4f}  "
               f"val_loss={val_loss:.4f}  val_F1[{f1_str}]  lr={scheduler.get_last_lr()[0]:.2e}  ({dt:.1f}s)")
 
         log_rows.append({
             "epoch": epoch + 1, "train_loss": train_loss, "val_loss": val_loss,
-            **{f"val_f1_{class_names[c]}": f1_mean[c] for c in range(NUM_CLASSES)},
+            **{f"val_f1_{class_names[c]}": (f1_final[c] if f1_final[c] is not None else float("nan"))
+               for c in range(NUM_CLASSES)},
+            **{f"val_coverage_{class_names[c]}_pred_images": coverage[c][1] for c in range(NUM_CLASSES)},
             "lr": scheduler.get_last_lr()[0], "seconds": round(dt, 2),
         })
 

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from checkpoint_utils import load_checkpoint_model
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
 from losses import TverskyLoss
-from train import per_class_f1
+from train import ConfusionAccumulator
 
 CLASS_NAMES = ["background", "building", "road", "flooded"]
 
@@ -49,23 +49,29 @@ def main():
     loss_fn = TverskyLoss(num_classes=NUM_CLASSES)
 
     loss_sum, n_batches = 0.0, 0
-    f1_accum = {c: 0.0 for c in range(NUM_CLASSES)}
+    acc = ConfusionAccumulator(NUM_CLASSES)
     with torch.no_grad():
         for pre, post, mask in loader:
             pre, post, mask = pre.to(device), post.to(device), mask.to(device)
             out = model(pre, post)
             loss_sum += loss_fn(out["logits"], mask).item()
             n_batches += 1
-            batch_f1 = per_class_f1(out["logits"], mask, NUM_CLASSES)
-            for c in range(NUM_CLASSES):
-                f1_accum[c] += batch_f1[c]
+            acc.update(out["logits"], mask)
 
-    print(f"\n{'Class':<12}{'F1':>8}")
-    print("-" * 20)
+    f1_final = acc.f1()
+    coverage = acc.coverage_report()
+
+    print(f"\n{'Class':<12}{'F1':>8}  {'GT imgs':>8}  {'Pred imgs':>10}")
+    print("-" * 42)
     for c in range(NUM_CLASSES):
-        print(f"{CLASS_NAMES[c]:<12}{f1_accum[c] / max(1, n_batches):>8.4f}")
-    print("-" * 20)
+        gt_n, pred_n, total_n = coverage[c]
+        f1_str = "n/a" if f1_final[c] is None else f"{f1_final[c]:.4f}"
+        flag = "  <- COLLAPSED (present in GT, never predicted)" if (gt_n > 0 and pred_n == 0) else ""
+        print(f"{CLASS_NAMES[c]:<12}{f1_str:>8}  {gt_n:>8}  {pred_n:>10}{flag}")
+    print("-" * 42)
     print(f"{'mean loss':<12}{loss_sum / max(1, n_batches):>8.4f}")
+    print(f"(GT imgs / Pred imgs out of {coverage[0][2]} total images -- a class present in many GT "
+          f"images but predicted in zero is a real failure a bare F1 number can hide.)")
 
 
 if __name__ == "__main__":
