@@ -1529,6 +1529,41 @@ of asking loss reweighting to reverse a state it can no longer see a
 gradient out of. Not yet implemented or tested; this is a documented,
 reasoned next step, not a claimed result.
 
+### 12.25 Implementing flood-head reinitialization
+
+`train.py` gained a standalone `reinit_flood_head(model, optimizer)`
+function and a `--reinit-flood-head` CLI flag (`--resume` +
+`--separate-flood-head` only). It replaces `model.flood_head`'s weights
+with a fresh `nn.Conv2d` init -- the same init a brand-new model's
+flood_head would get -- while leaving `split_trunk`/`structure_head`/the
+backbone exactly as loaded from the checkpoint. It also clears Adam's
+per-parameter moment estimates (`exp_avg`/`exp_avg_sq`) for just
+`flood_head`'s parameters, so its first several post-reinit updates
+aren't still shaped by the collapsed run's stale gradient statistics.
+
+**Verified, not just written**: a real before/after test -- trained a
+tiny model for 1 real step (so Adam has genuine per-parameter state),
+called `reinit_flood_head`, and confirmed (a) `flood_head.weight`
+actually changed, (b) `split_trunk[0].weight` did NOT change at all
+(byte-identical), (c) `flood_head`'s Adam state was cleared. Also
+smoke-tested at the CLI level (`--resume ... --reinit-flood-head`) on a
+real checkpoint: the reinit message printed, and directly diffing the
+before/after checkpoint files confirmed `flood_head.weight` changed
+while `structure_head.weight` and `split_trunk.0.weight` only moved by
+the small amount one real optimizer step would produce, not a reinit's
+worth of change. 1 new test, 58 passing overall
+(`python -m pytest tests/ -q`).
+
+v12 launches next: resume from v10's checkpoint (same one v11 started
+from -- building F1 0.599, road F1 0.402, flooded collapsed) with
+`--reinit-flood-head` PLUS v11's flood-specific weighting
+(`--flood-class-weight 20 --flood-tversky-beta 0.9`), so the fresh flood
+head starts learning under the stronger loss from a non-saturated
+point, instead of v11's mistake of applying the stronger loss to
+weights that had already saturated.
+
+## 13. Bottlenecks, honestly, and how to actually overcome each one
+
 Four real bottlenecks were hit while building this, in this environment
 (Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
 one below is what was actually observed, not a generic list.

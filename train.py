@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
@@ -102,6 +103,33 @@ def checkpoint_score(metric: str, val_loss: float, f1_final: dict) -> float:
     if metric == "min_f1":
         return -min(f1_values)
     raise ValueError(f"Unknown --checkpoint-metric '{metric}'")
+
+
+def reinit_flood_head(model, optimizer) -> None:
+    """Replace model.flood_head's weights with a fresh nn.Conv2d init
+    (same as a brand-new model's flood_head would get) and drop Adam's
+    per-parameter moment estimates for those weights, leaving every
+    other module (trunk/structure_head/backbone) exactly as loaded from
+    the checkpoint.
+
+    WHY THIS EXISTS (docs/MANUAL.md S12.24-S12.25): v11 showed that
+    reweighting the flood loss more aggressively does NOT recover a
+    flood head that has already saturated into always-predicting
+    background -- a saturated logit has near-zero local gradient
+    regardless of loss weight, so a stronger loss just multiplies a
+    near-zero gradient by a bigger number and still gets a near-zero
+    gradient. The fix has to give the head a fresh, non-saturated
+    starting point instead of asking loss reweighting to argue it out
+    of a state it can no longer see a gradient out of. Clearing the
+    optimizer state matters too: leaving Adam's old exp_avg/exp_avg_sq
+    in place would have its first several updates on the fresh weights
+    still shaped by the collapsed run's stale gradient statistics.
+    """
+    fresh_flood_head = nn.Conv2d(model.flood_head.in_channels, model.flood_head.out_channels,
+                                  model.flood_head.kernel_size)
+    model.flood_head.load_state_dict(fresh_flood_head.state_dict())
+    for p in model.flood_head.parameters():
+        optimizer.state.pop(p, None)
 
 
 class ConfusionAccumulator:
@@ -315,6 +343,18 @@ def main():
                          "unset -- same as before this flag existed. A higher beta specifically "
                          "for flood pushes harder against missing flooded pixels without changing "
                          "how the structure loss weights building/road/background.")
+    p.add_argument("--reinit-flood-head", action="store_true",
+                    help="--resume + --separate-flood-head only: after loading the checkpoint, "
+                         "reinitialize ONLY model.flood_head's own weights (fresh nn.Conv2d init) "
+                         "instead of continuing from the checkpoint's flood_head weights, keeping "
+                         "the trunk/structure_head/backbone's already-learned features intact. "
+                         "Motivated by v11 (docs/MANUAL.md S12.24): reweighting the flood loss "
+                         "alone did not recover a flood head that had already saturated into "
+                         "always-predicting-background -- a saturated logit has near-zero local "
+                         "gradient regardless of loss weight, so the fix has to give the head a "
+                         "fresh, non-saturated starting point, not just a stronger pull on the "
+                         "same starting point. No effect without --resume (a fresh model's "
+                         "flood_head is already randomly initialized).")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -404,6 +444,13 @@ def main():
             )
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
+        if args.reinit_flood_head:
+            if not args.separate_flood_head or not hasattr(model, "flood_head"):
+                raise SystemExit("--reinit-flood-head needs --separate-flood-head "
+                                  "(the checkpoint's model has no flood_head to reinitialize).")
+            reinit_flood_head(model, optimizer)
+            print("Reinitialized flood_head's weights (fresh init) and cleared its optimizer "
+                  "state -- trunk/structure_head/backbone kept their checkpoint weights.")
         # BUG THIS FIXES: optimizer.load_state_dict restores the PREVIOUS run's
         # param_group lr too -- which, after a full cosine anneal, is ~0. Left
         # alone, that silently overrides whatever --lr was just requested, so a

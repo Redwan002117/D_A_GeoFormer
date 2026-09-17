@@ -8,8 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+import torch
 
-from train import checkpoint_score
+from train import checkpoint_score, reinit_flood_head
+from model import DualAxisGeoFormer, GeoFormerConfig
 
 
 def test_val_loss_metric_matches_prior_behavior():
@@ -68,10 +70,54 @@ def test_unknown_metric_raises():
         checkpoint_score("not_a_real_metric", 0.5, {0: 0.9})
 
 
+def _tiny_separate_head_config() -> GeoFormerConfig:
+    return GeoFormerConfig(
+        stem_channels=8, stage_dims=(8, 16), stage_windows=(4, 2), stage_grids=(4, 2),
+        num_heads=2, num_classes=4, separate_flood_head=True,
+    )
+
+
+def test_reinit_flood_head_changes_only_the_flood_head():
+    """The exact real bug this exists to fix (docs/MANUAL.md S12.24-S12.25):
+    a --resume'd flood head that has already saturated needs a fresh
+    starting point, not just a stronger loss pulling on the same
+    saturated weights. Verifies reinit_flood_head changes flood_head's
+    weights while leaving every other module (here, split_trunk) exactly
+    as it was -- reinitializing the wrong thing, or too much, would
+    silently discard checkpoint progress this feature is meant to keep."""
+    model = DualAxisGeoFormer(_tiny_separate_head_config())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    # Simulate a "trained" checkpoint: one real optimizer step so Adam has
+    # per-parameter state to verify gets cleared for flood_head specifically.
+    pre = torch.randn(1, 3, 32, 32)
+    post = torch.randn(1, 3, 32, 32)
+    out = model(pre, post)
+    (out["structure_logits"].sum() + out["flood_logit"].sum()).backward()
+    optimizer.step()
+
+    flood_head_params = list(model.flood_head.parameters())
+    assert all(p in optimizer.state for p in flood_head_params), \
+        "test setup: Adam should have state for flood_head after a real step"
+
+    trunk_weight_before = model.split_trunk[0].weight.clone()
+    flood_weight_before = model.flood_head.weight.clone()
+
+    reinit_flood_head(model, optimizer)
+
+    assert torch.equal(model.split_trunk[0].weight, trunk_weight_before), \
+        "reinit_flood_head must not touch split_trunk's weights"
+    assert not torch.equal(model.flood_head.weight, flood_weight_before), \
+        "reinit_flood_head must actually change flood_head's weights"
+    assert not any(p in optimizer.state for p in flood_head_params), \
+        "reinit_flood_head must clear flood_head's stale Adam moment estimates"
+
+
 if __name__ == "__main__":
     test_val_loss_metric_matches_prior_behavior()
     test_mean_f1_prefers_broad_detection_over_lower_loss()
     test_min_f1_is_stricter_than_mean_f1_against_collapse()
     test_none_entries_are_excluded_from_the_average()
     test_no_classes_seen_yet_scores_as_worst_possible()
+    test_reinit_flood_head_changes_only_the_flood_head()
     print("All tests passed.")
