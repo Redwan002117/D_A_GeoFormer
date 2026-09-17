@@ -1,6 +1,11 @@
 """Run inference against every 'pending' sample submitted through the
 dashboard, using the current checkpoints/best.pt (or --checkpoint).
 
+Since dashboard_server.py runs inference live on submission (see
+dashboard/inference.py), a sample only ends up 'pending' here if live
+inference wasn't available at submit time (e.g. no checkpoint existed
+yet) -- this is now the manual backfill/retry path, not the primary one.
+
 Usage:
     python dashboard/process_samples.py
     python dashboard/process_samples.py --checkpoint checkpoints_baseline/best.pt
@@ -12,24 +17,14 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-import torch
-from PIL import Image
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from checkpoint_utils import load_checkpoint_model  # noqa: E402
+from dashboard.inference import run_inference  # noqa: E402
 from db.db_logger import _load_database_url  # noqa: E402
 
 import psycopg2  # noqa: E402
 import psycopg2.extras  # noqa: E402
-
-
-def _load_image_tensor(path: Path, image_size: int) -> torch.Tensor:
-    img = Image.open(path).convert("RGB").resize((image_size, image_size))
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
 
 
 def main():
@@ -37,11 +32,6 @@ def main():
     p.add_argument("--checkpoint", default="checkpoints/best.pt")
     p.add_argument("--image-size", type=int, default=256)
     args = p.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, ckpt = load_checkpoint_model(BASE_DIR / args.checkpoint, device)
-    model.eval()
-    class_names = ["background", "building", "road", "flooded"]
 
     url = _load_database_url()
     if not url:
@@ -55,24 +45,23 @@ def main():
     for row in pending:
         sample_id = row["id"]
         try:
-            pre = _load_image_tensor(BASE_DIR / row["pre_filename"], args.image_size).to(device)
-            post = _load_image_tensor(BASE_DIR / row["post_filename"], args.image_size).to(device)
-            with torch.no_grad():
-                out = model(pre, post)
-            pred = out["logits"].argmax(dim=1)[0].cpu().numpy()
-            coverage = {name: int((pred == c).sum()) for c, name in enumerate(class_names)}
-            result = {
-                "pixel_counts": coverage,
-                "predicted_classes_present": [name for name, n in coverage.items() if n > 0],
-            }
+            pre_path = BASE_DIR / row["pre_filename"]
+            post_path = BASE_DIR / row["post_filename"]
+            result, png_bytes = run_inference(pre_path, post_path, args.checkpoint, args.image_size)
+
+            sample_uuid = Path(row["pre_filename"]).stem.split("_pre_")[0]
+            overlay_path = pre_path.parent / f"{sample_uuid}_overlay.png"
+            overlay_path.write_bytes(png_bytes)
+
             write_cur = conn.cursor()
             write_cur.execute(
                 """
                 UPDATE samples
-                SET status = 'processed', checkpoint_used = %s, result_json = %s, processed_at = now()
+                SET status = 'processed', checkpoint_used = %s, result_json = %s,
+                    result_image = %s, processed_at = now()
                 WHERE id = %s
                 """,
-                (str(args.checkpoint), json.dumps(result), sample_id),
+                (str(args.checkpoint), json.dumps(result), str(overlay_path.relative_to(BASE_DIR)), sample_id),
             )
             conn.commit()
             print(f"sample {sample_id}: {result['predicted_classes_present']}")
