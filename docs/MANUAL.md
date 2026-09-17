@@ -1435,6 +1435,53 @@ the other two classes down with it, which the architecture change would
 still have earned credit for even if flooded itself needs a second,
 separate intervention.
 
+### 12.23 Epochs 10-12: flooded's collapse looks permanent; building/road stay healthy and improving
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage |
+|---|---|---|---|---|
+| 8 | 0.530 | 0.314 | 0.000 | 0/87 |
+| 9 | 0.540 | 0.410 | 0.000 | 0/87 |
+| 10 | 0.551 | 0.394 | 0.000 | 0/87 |
+| 11 | 0.593 | 0.415 | 0.000 | 0/87 |
+| 12 | **0.599** | 0.402 | 0.000 | 0/87 |
+
+**flooded**: 5 consecutive epochs at exactly 0.000 F1 / 0 coverage
+(epochs 8-12). This is no longer read as a transient dip -- it matches
+the shape of every prior permanent collapse in this project (once F1
+hits exactly 0.000 and coverage hits exactly 0, no run has ever
+recovered from that state on its own). Calling this the likely
+conclusion for flooded in v10's current configuration, barring a
+change of intervention.
+
+**building/road**: the real, durable positive result. Across 5 more
+epochs since flooded's collapse, building kept RISING (0.530 -> 0.599,
+new project best, still trending up) and road stayed in its normal
+0.31-0.42 band -- neither shows any sign of being dragged down by
+flooded's collapse. This is the clearest evidence yet that the
+separate-head architecture change achieved its actual goal: it broke
+the cross-class coupling that made v1-v9's collapses total (all three
+classes together). What remains is a second, different problem --
+flooded's own severe class imbalance is apparently still enough to
+collapse its own isolated binary head, independent of any competition
+with other classes.
+
+**Implication for what to try next** (not yet implemented, S12.14's
+still-open items): since flooded's own head can collapse in complete
+isolation, the fix has to act on flooded's OWN loss/sampling, not on
+inter-class competition (already solved). Concretely, in roughly
+likely-effort order: (1) a flood-specific beta higher than the shared
+`--tversky-beta` (this run still uses 0.7 default, shared with
+structure classes -- the flood loss branch could use its own, more
+aggressive alpha/beta independent of the structure loss's), (2) a much
+larger flood-class weight specifically in the binary flood loss (this
+run's `--class-weights "1,2,2,4"` only weights the STRUCTURE loss;
+`compute_loss()` in train.py currently hard-codes the flood loss's own
+weights as `[1.0, class_weights[3]]` = `[1.0, 4.0]` -- a much higher
+ratio, e.g. 1:20, is untried), (3) genuinely more flooded-labeled data
+(docs/EXTERNAL_DATA_PLAN.md's trigger conditions are now closer to met,
+since the architecture-level fix has been tried and flooded's collapse
+persists in a form not explained by cross-class competition).
+
 Four real bottlenecks were hit while building this, in this environment
 (Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
 one below is what was actually observed, not a generic list.
