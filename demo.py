@@ -125,9 +125,15 @@ def main():
     is_trained = ckpt_path is not None and ckpt_path.exists()
 
     if is_trained:
-        print(f"Loading trained checkpoint: {ckpt_path} "
-              "(pipeline-validation run on SYNTHETIC data -- see docs/MANUAL.md)")
         model, ckpt = load_checkpoint_model(ckpt_path, device="cpu")
+        # BUG THIS FIXES: this print used to run BEFORE the checkpoint was
+        # even loaded, hardcoding "SYNTHETIC data" regardless of what the
+        # checkpoint actually turned out to be -- the same bug class fixed
+        # in the figure caption below, missed here since this line runs
+        # earlier and isn't near that fix. Print after loading, from the
+        # checkpoint's own recorded data_source.
+        data_source = ckpt.get("data_source", "unknown (checkpoint predates data_source tracking)")
+        print(f"Loading trained checkpoint: {ckpt_path} (trained on: {data_source} -- see docs/MANUAL.md)")
         if ckpt.get("model_type", "geoformer") != "geoformer":
             raise SystemExit(
                 f"{ckpt_path} is a '{ckpt.get('model_type')}' checkpoint -- demo.py demonstrates "
@@ -154,12 +160,15 @@ def main():
 
     pred_classes = logits.argmax(dim=0).numpy()
 
-    saliency_full = np.array(
-        torch.nn.functional.interpolate(
-            torch.from_numpy(saliency)[None, None].float(),
-            size=(IMG_SIZE, IMG_SIZE), mode="bilinear", align_corners=False,
-        )[0, 0]
-    )
+    # BUG THIS FIXES: np.array(a_torch_tensor) goes through torch's __array__
+    # protocol with a `copy` keyword newer numpy passes and older torch
+    # doesn't accept, raising a DeprecationWarning today and, per that
+    # warning's own text, a hard TypeError in a future numpy release. A
+    # tensor's own .numpy() method is the direct, version-safe conversion.
+    saliency_full = torch.nn.functional.interpolate(
+        torch.from_numpy(saliency)[None, None].float(),
+        size=(IMG_SIZE, IMG_SIZE), mode="bilinear", align_corners=False,
+    )[0, 0].numpy()
 
     gap_road = gt_road & ~(gt_flood & gt_road)  # the visibly-broken road, matching post_img
     if args.skip_bridging:

@@ -7,13 +7,14 @@ Railway, Fly.io, AWS App Runner / ECS, GCP Cloud Run, Azure Container Apps)
 itself has no cloud dependency: it's a plain FastAPI app that loads a
 checkpoint once at startup and serves HTTP requests.
 
-IMPORTANT -- same honesty note as everywhere else in this repo: the
-checkpoint this loads by default was trained on synthetic data only (see
-docs/MANUAL.md "What 'trained' means here"). This API makes the *pipeline*
-deployable and demoable, including on real photographs -- it does not make
-the *predictions* validated flood-detection accuracy. The response JSON
-includes a `model_status` field for exactly this reason; surface it
-wherever predictions are shown.
+IMPORTANT -- same honesty note as everywhere else in this repo: whatever
+checkpoint GEOFORMER_CHECKPOINT points at (synthetic-trained, real-data-
+trained, or untrained), this API makes the *pipeline* deployable and
+demoable -- it does not, by itself, make the *predictions* validated
+flood-detection accuracy (see docs/MANUAL.md "What 'trained' means here").
+The response JSON's `model_status` field reports the loaded checkpoint's
+own recorded data_source for exactly this reason; surface it wherever
+predictions are shown, rather than assuming what trained it.
 
 Endpoints:
   GET  /health            -> {"status": "ok", "model_status": "...", "device": "..."}

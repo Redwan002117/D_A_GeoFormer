@@ -349,7 +349,15 @@ class DualAxisGeoFormer(nn.Module):
 
         return {
             "logits": logits,                    # (B, num_classes, H, W)
-            "grid_saliency": saliencies_post[-2], # deepest usable stage, for Phase 4 bridging
+            # BUG THIS FIXES: this read saliencies_post[-2] with a comment
+            # claiming "deepest usable stage" -- but the actual deepest
+            # stage (-1) IS usable (verified: correct shape, no NaN, at
+            # every config tried). -2 was one stage shallower than the
+            # comment's own stated intent, an off-by-one against the design
+            # rationale (the deepest stage's attention has the most
+            # downsampling behind it, so the most globally-contextualized
+            # signal -- exactly what Phase 4 bridging wants).
+            "grid_saliency": saliencies_post[-1],  # deepest stage, for Phase 4 bridging
         }
 
     def num_parameters(self) -> int:
