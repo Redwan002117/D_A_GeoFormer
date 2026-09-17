@@ -560,6 +560,50 @@ happened to exist at that moment, not a consistent one across runs. Every
 held-out number reported from §12.4's epoch 93 checkpoint onward uses the
 corrected, stable split.
 
+### 12.6 Continued training to epoch 104, then a class-weighted oversampling run
+
+Continuing from §12.5's epoch 93 checkpoint (stable split, `road` F1
+0.275) to epoch 104, `road` F1 stopped climbing and started oscillating:
+
+| epoch | val_loss | road F1 | building/flooded F1 |
+|---|---|---|---|
+| 95 | 0.4037 | 0.269 | 0.000 / 0.000 |
+| 97 | 0.4139 | 0.256 | 0.000 / 0.000 |
+| 100 | 0.4299 | 0.196 | 0.000 / 0.000 |
+| 101 | 0.4324 | 0.167 | 0.000 / 0.000 |
+| 104 | 0.4157 | 0.237 | 0.000 / 0.000 |
+
+`building` and `flooded` stayed at exactly 0.000 with zero predicted-in
+images across every one of these epochs -- unchanged from §12.3-§12.5.
+`road`'s oscillation (0.28 → 0.17 → 0.24, not a clean plateau) most likely
+reflects `lr` restarting near its scheduled floor as each `--resume`
+segment's cosine schedule re-anneals over a short remaining-epoch window,
+not a genuine ceiling on what the architecture can learn -- but distinguishing
+those two explanations needs a longer uninterrupted run, not another
+short resume.
+
+**Concrete next step taken, not just recommended**: §13's own
+"weighted/oversampled DataLoader" suggestion is now real code, not just a
+sentence. `SpaceNet8Dataset.class_presence_weights()` reads the
+`class_pixel_counts` field `prepare_real_data.py` already writes into
+`index.json` (no new download needed) and returns a per-tile sampling
+weight -- boosted 4x for tiles containing any building pixels, 6x for
+flooded, multiplicatively for tiles with both. On the real 714-tile train
+split, this boosts 528 of 714 tiles (74%). `train.py --oversample-rare-classes`
+wires this into a `torch.utils.data.WeightedRandomSampler` over the TRAIN
+split only -- validation keeps sampling the true, unweighted real
+distribution, so held-out F1 stays comparable to every number above.
+
+A resumed run from the epoch-104 checkpoint with `--oversample-rare-classes
+--epochs 200` is in progress; results will be appended here once it's run
+long enough to say something real, not projected in advance. The Colab
+notebook's two main training cells were also fixed (a genuine, separate
+bug: their multi-line `!python` commands had a corrupted line-continuation
+-- literal `\n` text instead of an actual line break, left over from an
+earlier notebook edit -- that would have broken both cells the moment
+anyone ran them) and updated to use the same flag with `--epochs 200`, so
+a GPU run gets the same boost at real scale.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
