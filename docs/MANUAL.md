@@ -730,7 +730,45 @@ order). Training was restarted a third time
 combining both fixes: `--oversample-rare-classes --class-weights "1,3,1,8"`
 -- building weighted 3x, flooded 8x relative to background/road's
 baseline 1x, chosen to reflect flooded being the rarer and harder of the
-two collapsed classes. Results will be appended here as real epochs land.
+two collapsed classes.
+
+### 12.9 The v3 weights (1,3,1,8) traded one collapse for another -- `road` this time
+
+| epoch | val_loss | building F1 (coverage) | road F1 (coverage) | flooded F1 (coverage) |
+|---|---|---|---|---|
+| 1 | 0.8706 | 0.123 (84/87) | **0.000 (0/87)** | 0.071 (84/87) |
+| 2 | 0.8563 | 0.256 (77/87) | **0.000 (0/87)** | 0.049 (86/87) |
+
+Genuinely different from v2's failure: `building` and `flooded` both had
+real, non-zero coverage from epoch 1 onward this time. But `road` --
+this project's one class with real prior success -- collapsed to exactly
+0.000 in both epochs measured. Weighting `background`/`road` both at 1x
+against `building` at 3x and `flooded` at 8x left `road` undefended once
+the other two classes started pulling harder on the same per-pixel
+softmax; two-for-two epochs pointing the same direction was treated as
+strong enough evidence to intervene rather than wait for more.
+
+Rebalanced to `1,2,2,4` (`road` raised from 1x to 2x, `flooded` lowered
+from 8x to 4x, `building` from 3x to 2x) -- softening the gap between all
+three foreground classes relative to background, rather than sacrificing
+`road` to chase `flooded`. Training restarted a fourth time
+(`training_log_geoformer_801_v4.csv`, v1/v2/v3 logs all preserved).
+Results appended here as real epochs land.
+
+**A separate bug found and fixed while reviewing this session's own newer
+code** (asked directly to "fix all bugs and errors," so the dashboard/db
+code that hadn't had a dedicated review pass yet got one): `dashboard_server.py`'s
+sample-upload endpoint built the saved file path directly from the
+client-supplied multipart filename with no sanitization -- a crafted
+filename like `../../../../evil.txt` resolved outside the intended upload
+directory entirely (confirmed directly against the running server, not
+just reasoned about) -- a real path-traversal arbitrary-file-write.
+Fixed by reducing the filename to a sanitized basename before it ever
+touches a path. Separately, `db/db_logger.py`'s `log_epoch` never rolled
+back after a failed query, which would have left the DB connection stuck
+in Postgres's "aborted transaction" state for the rest of a run after any
+single transient failure -- reproduced directly against the live database
+and fixed with an explicit `rollback()`.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
