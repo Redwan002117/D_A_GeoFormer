@@ -1289,6 +1289,39 @@ nonzero past epoch 3 with a separate head, the collapse was indeed a
 shared-representation problem, not something the loss/backbone/
 augmentation levers alone could fix.
 
+### 12.19 v10 result: the separate flood head breaks the collapse (provisional, epochs 1-3)
+
+v10 (separate flood head + pretrained backbone + oversampling +
+class-weighted loss + D4 augmentation + backbone freezing + `min_f1`
+checkpoint selection, `training_log_geoformer_801_v10.csv`) is the direct
+test of S12.17's hypothesis. Real result, epochs 1-3:
+
+| epoch | building F1 | road F1 | flooded F1 | val_loss |
+|---|---|---|---|---|
+| 1 | 0.272 | 0.324 | 0.189 | 1.329 |
+| 2 | 0.472 | 0.358 | 0.168 | 1.234 |
+| 3 | **0.529** | 0.385 | **0.383** | 1.225 |
+
+**Epoch 3 is exactly where every prior run (v1-v9) collapsed to
+`building=0.000, flooded=0.000`.** v10 does not collapse there: building
+F1 rises monotonically across all three epochs (0.272 -> 0.472 -> 0.529)
+and flooded F1 reaches 0.383 at epoch 3 -- the best flooded F1 recorded
+at ANY epoch of this entire project (previous best was v9 epoch 2's
+0.187, S12.16). val_loss is also falling smoothly, not spiking.
+
+This is consistent with, not just hoped-for by, the S12.17 diagnosis:
+once `flooded` has its own output head and its own loss term instead of
+sharing softmax competition with `background`'s overwhelming pixel-count
+advantage, the mechanism that caused every previous collapse has no
+direct pathway to act on it.
+
+**Marked provisional deliberately**: three epochs is not proof the
+collapse is gone for good -- S12.13's backbone-freezing run also looked
+stable before further training; unfreezing at epoch 4 or continued
+training could still reveal a later collapse or a different failure
+mode. Monitoring continues through at least epoch 6-10 before this
+result is called anything stronger than "the fix is working so far."
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
