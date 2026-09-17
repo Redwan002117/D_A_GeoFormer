@@ -1379,6 +1379,62 @@ longest any prior run survived without it (every one of v1-v9 collapsed
 by epoch 3-4). Still calling this provisional, not concluded --
 continuing to epoch 10+.
 
+**Correction, epoch 8-9 (see S12.22 below): this read was premature.**
+flooded DID collapse, just later and differently than before. Left here
+unedited, not quietly fixed, because the reasoning at the time was
+honest given the data available then -- S12.22 is the correction.
+
+### 12.22 Epochs 8-9: flooded collapses anyway, but NOT together with building/road this time
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage | val_loss |
+|---|---|---|---|---|---|
+| 7 | 0.562 | 0.372 | 0.482 | 41/87 | 1.159 |
+| 8 | 0.530 | 0.314 | **0.000** | **0/87** | 0.727 |
+| 9 | 0.540 | 0.410 | **0.000** | **0/87** | 0.680 |
+
+**The honest headline: flooded collapsed, at epoch 8.** S12.20-S12.21's
+optimistic read of the coverage trend was wrong -- it wasn't
+stabilizing, epoch 7 was a local peak before the same kind of
+total-collapse S12.17 found (0.000 F1, 0 coverage, not a gradual
+decline).
+
+**What's genuinely different from every prior run (v1-v9), and matters
+for what this proves**: `building` and `road` did NOT collapse with it.
+building F1 stayed at 0.530/0.540 (barely moved from epoch 7's 0.562)
+and road at 0.314/0.410 (within its normal epoch-to-epoch range) --
+completely unlike v1-v9, where building and flooded always collapsed
+together in the same epoch because they shared one softmax. The
+separate-head architecture change DID achieve its narrow goal: it
+decoupled flooded's fate from the other classes'. What it did NOT do is
+prevent flooded's OWN collapse within its own binary head.
+
+**Revised understanding of the mechanism**: S12.17 diagnosed a shared-
+representation problem where the dominant class (background) reshapes
+upstream features at the expense of rare ones sharing its softmax.
+Giving flooded its own head removed that specific cross-class
+competition -- and building/road's stability here confirms that removal
+worked. But flooded is *still* a severe class-imbalance problem even in
+isolation (well under 0.1% of pixels project-wide, S12.3), and a binary
+head with a Tversky loss can still find "predict not-flooded everywhere"
+as a loss-reducing local minimum on its own -- val_loss dropping sharply
+(1.159 -> 0.727 -> 0.680) exactly when flooded's F1 hit zero is
+consistent with this: the flood_loss term shrinks a lot when flooded
+predictions vanish, because so few pixels are actually flooded, so total
+loss drops even as the class is abandoned. This means S12.14's item 1
+(separate head) was a real, partial fix -- it solved the cross-class
+crowding-out -- but not a complete fix for flooded specifically, which
+still needs its own severe-imbalance handling (stronger class weighting
+on the flood loss specifically, a higher beta there, or genuinely more
+flooded-labeled data per docs/EXTERNAL_DATA_PLAN.md) independent of the
+architecture question.
+
+Training continues past epoch 9 to see whether flooded's collapse here
+is as permanent as v1-v9's was, or whether -- now that it's isolated
+from building/road -- it's able to recover on its own without dragging
+the other two classes down with it, which the architecture change would
+still have earned credit for even if flooded itself needs a second,
+separate intervention.
+
 Four real bottlenecks were hit while building this, in this environment
 (Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
 one below is what was actually observed, not a generic list.
