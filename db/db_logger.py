@@ -75,8 +75,9 @@ class DBLogger:
                 INSERT INTO epoch_logs (
                     run_id, epoch, train_loss, val_loss,
                     f1_background, f1_building, f1_road, f1_flooded,
-                    pred_images_building, pred_images_flooded, lr, epoch_seconds
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
+                    lr, epoch_seconds
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (run_id, epoch) DO UPDATE SET
                     train_loss = EXCLUDED.train_loss,
                     val_loss = EXCLUDED.val_loss,
@@ -84,7 +85,9 @@ class DBLogger:
                     f1_building = EXCLUDED.f1_building,
                     f1_road = EXCLUDED.f1_road,
                     f1_flooded = EXCLUDED.f1_flooded,
+                    pred_images_background = EXCLUDED.pred_images_background,
                     pred_images_building = EXCLUDED.pred_images_building,
+                    pred_images_road = EXCLUDED.pred_images_road,
                     pred_images_flooded = EXCLUDED.pred_images_flooded,
                     lr = EXCLUDED.lr,
                     epoch_seconds = EXCLUDED.epoch_seconds
@@ -92,7 +95,8 @@ class DBLogger:
                 (
                     self.run_id, row["epoch"], row["train_loss"], row["val_loss"],
                     row["val_f1_background"], row["val_f1_building"], row["val_f1_road"], row["val_f1_flooded"],
-                    row["val_coverage_building_pred_images"], row["val_coverage_flooded_pred_images"],
+                    row["val_coverage_background_pred_images"], row["val_coverage_building_pred_images"],
+                    row["val_coverage_road_pred_images"], row["val_coverage_flooded_pred_images"],
                     row["lr"], row["seconds"],
                 ),
             )

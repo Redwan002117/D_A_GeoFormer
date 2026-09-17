@@ -117,7 +117,8 @@ def run_epochs(run_id: int):
             """
             SELECT epoch, train_loss, val_loss,
                    f1_background, f1_building, f1_road, f1_flooded,
-                   pred_images_building, pred_images_flooded, lr, epoch_seconds
+                   pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
+                   lr, epoch_seconds
             FROM epoch_logs WHERE run_id = %s ORDER BY epoch
             """,
             (run_id,),
