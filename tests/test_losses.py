@@ -164,6 +164,48 @@ def test_valid_mask_excludes_pixels_entirely():
     assert abs(loss_with_bad_pixel_excluded - loss_pixel_physically_removed) < 1e-5
 
 
+def test_tversky_gradient_vanishes_on_saturated_prediction_but_bce_does_not():
+    """The exact real mechanism motivating --flood-bce-weight (docs/MANUAL.md
+    S12.30): S12.24 diagnosed the flood head's collapse as the logit
+    saturating into a confidently-negative ("never flooded") region where
+    Tversky's gradient goes near-zero even though real flooded pixels are
+    present in the target -- Tversky is a GLOBAL tp/fp/fn ratio, and once
+    predicted positives are ~0, that ratio's gradient w.r.t. the logits
+    is tiny. BCE is computed per-pixel independently and has no such
+    collapse. Verified numerically, not just asserted: on the same
+    deeply-saturated logits and the same target (some real positives
+    present), Tversky's gradient norm is near-zero while BCE's is not --
+    this is the actual justification for adding BCE as a second term."""
+    torch.manual_seed(0)
+    # A flood_logit that has already saturated: confidently negative
+    # ("not flooded") everywhere, even at the 5 pixels the target says
+    # ARE flooded -- exactly the collapsed state S12.24 found in practice.
+    saturated_logit = torch.full((1, 1, 8, 8), -12.0, requires_grad=True)
+    target = torch.zeros(1, 8, 8, dtype=torch.long)
+    target[0, :2, :3] = 1  # 6 real flooded pixels the saturated model is missing entirely
+
+    two_channel = torch.cat([-saturated_logit, saturated_logit], dim=1)
+    tversky_loss = TverskyLoss(num_classes=2)(two_channel, target)
+    tversky_loss.backward()
+    tversky_grad_norm = saturated_logit.grad.norm().item()
+
+    saturated_logit2 = saturated_logit.detach().clone().requires_grad_(True)
+    import torch.nn.functional as F
+    bce_loss = F.binary_cross_entropy_with_logits(saturated_logit2, target.unsqueeze(1).float())
+    bce_loss.backward()
+    bce_grad_norm = saturated_logit2.grad.norm().item()
+
+    assert tversky_grad_norm < 1e-3, (
+        f"Tversky's gradient should be ~vanished on a saturated prediction (this is the "
+        f"failure mode S12.24 diagnosed), got norm={tversky_grad_norm}"
+    )
+    assert bce_grad_norm > 1e-2, (
+        f"BCE must keep producing real gradient in exactly the regime Tversky stalls -- "
+        f"the whole point of adding it -- got norm={bce_grad_norm}"
+    )
+    assert bce_grad_norm > 100 * tversky_grad_norm
+
+
 if __name__ == "__main__":
     test_loss_is_near_zero_for_a_perfect_prediction()
     test_loss_is_bounded_between_zero_and_one()

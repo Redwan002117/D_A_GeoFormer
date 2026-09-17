@@ -1747,6 +1747,69 @@ which is NOT this project's actual best real result -- that's
 predictions from a weaker, older checkpoint than the one this project
 actually has. Fixed by pointing the default at the real best checkpoint.
 
+### 12.30 A research pass before the next intervention, and a second new lever: compound BCE+Tversky loss
+
+Before choosing what to try after EMA, dispatched a research pass
+(citing real sources: the SpaceNet-8 5th-place solution's own README,
+Isensee et al. 2021's nnU-Net paper, Ghiasi et al. 2021's Simple
+Copy-Paste augmentation paper, Tian et al.'s Recall Loss paper, and
+Zhong et al. 2023's "Understanding Imbalanced Semantic Segmentation
+Through Neural Collapse") specifically asking what's left to try for
+THIS project's exact failure mode (a binary head that trains well for
+several epochs, then saturates into always-predicting-background),
+given everything already ruled out in S12.14-S12.29.
+
+**Top recommendation, implemented**: a compound loss -- Tversky (already
+used) PLUS binary cross-entropy, matching the SpaceNet-8 5th-place
+solution's own `1*dice + 1*bce` for its flood head. The mechanism is
+specific, not generic: S12.24 diagnosed the collapse as the flood
+logit saturating into a region where Tversky's gradient (a GLOBAL
+tp/fp/fn ratio) goes near-zero once predicted positives are ~0, even
+though real flooded pixels are present in the target. BCE is computed
+per-pixel independently and has no such collapse. **Verified
+numerically, not just argued**: a new test constructs a deliberately
+saturated logit (confidently "not flooded" everywhere) with real
+flooded pixels in the target, and confirms Tversky's gradient norm on
+it is <1e-3 (effectively vanished) while BCE's gradient norm on the
+IDENTICAL input is over 100x larger -- this is the literal, measured
+justification for adding it, not an assumption.
+
+`--flood-bce-weight` (default `None`, disabled, exact prior behavior)
+adds `weight * binary_cross_entropy_with_logits(flood_logit,
+flood_target)` to the flood loss. 1 new unit test (the gradient-
+vanishing proof above) plus an end-to-end smoke test. 62 tests passing.
+
+**Other research findings, ranked, not yet implemented** (candidates
+for the run after next, in roughly this priority order):
+1. Freezing `flood_head`'s parameters specifically once its own F1
+   plateaus/declines (per-head early stopping) -- operationalizes
+   S12.14 item 4 surgically instead of a project-wide LR change.
+2. A wider (7x7, vs the current 1x1) kernel in `flood_head` -- the
+   SAME SpaceNet-8 5th-place solution's other mitigation alongside EMA,
+   for the same reported symptom. Mechanism: spatial context smooths
+   per-pixel logit noise, since flood regions are large/contiguous, not
+   point-like. Their own source is explicit this only "mitigate[d] the
+   instability to SOME extent," not a full fix. Higher cost here than
+   the other items: changes `flood_head`'s parameter shape, so it can't
+   load directly from an existing checkpoint's weights (needs fresh
+   init or a center-weight transplant).
+3. Weight decay specifically on `flood_head`'s own optimizer param
+   group, to bound logit magnitude and make the S12.24 saturation
+   regime harder to reach in the first place.
+4. Copy-paste augmentation (Ghiasi et al. 2021): paste real flooded
+   regions from flooded tiles onto non-flooded tiles, to test whether
+   S12.28's "more data" conclusion is really about volume or about
+   per-epoch exposure, using only the existing 801 tiles, before
+   committing to `docs/EXTERNAL_DATA_PLAN.md`'s larger effort.
+5. Recall Loss (Tian et al.) as a self-adjusting replacement for the
+   now hand-tuned `--flood-class-weight` -- lower priority, same family
+   as weighting already tried.
+
+**v13's own result** (separate-head + EMA momentum 0.002 + the S12.24-
+S12.25 flood-specific weighting, resumed from v12's best checkpoint)
+is still in progress as of this writing -- reported in the next section
+once real epochs land.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

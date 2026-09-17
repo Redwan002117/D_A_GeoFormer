@@ -28,6 +28,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
@@ -365,6 +366,21 @@ def main():
                          "unset -- same as before this flag existed. A higher beta specifically "
                          "for flood pushes harder against missing flooded pixels without changing "
                          "how the structure loss weights building/road/background.")
+    p.add_argument("--flood-bce-weight", type=float, default=None,
+                    help="--separate-flood-head only: adds `weight * "
+                         "binary_cross_entropy_with_logits(flood_logit, flood_target)` to the "
+                         "flood loss, alongside the existing Tversky term. None (default) "
+                         "disables it -- exact prior behavior. Motivated by real evidence "
+                         "(docs/MANUAL.md S12.30): S12.24 diagnosed the flood head's collapse "
+                         "as the logit saturating into a region where Tversky's gradient (a "
+                         "global TP/FP/FN ratio) goes near-zero once predicted positives vanish "
+                         "-- a known degenerate property of pure Dice/Tversky losses on an "
+                         "emptying mask. BCE is computed per-pixel independently and never goes "
+                         "flat at zero predicted positives, so it keeps injecting real gradient "
+                         "in exactly the regime where Tversky alone currently stalls. This is "
+                         "also literally what the SpaceNet-8 competition's own 5th-place "
+                         "solution used for its flood head (`1*dice + 1*bce`) -- a weight of "
+                         "1.0 matches their convention.")
     p.add_argument("--ema-momentum", type=float, default=None,
                     help="Exponential moving average of model weights: after every optimizer "
                          "step, ema = ema * (1 - momentum) + raw_weights * momentum. The EMA "
@@ -440,7 +456,8 @@ def main():
         if flood_class_weight is None:
             flood_class_weight = class_weights[3] if class_weights else 1.0
         flood_beta = args.flood_tversky_beta if args.flood_tversky_beta is not None else args.tversky_beta
-        print(f"Flood loss: class_weight=[1.0, {flood_class_weight}] beta={flood_beta} "
+        bce_note = f" + {args.flood_bce_weight}*BCE" if args.flood_bce_weight is not None else ""
+        print(f"Flood loss: class_weight=[1.0, {flood_class_weight}] beta={flood_beta}{bce_note} "
               f"(independent of the structure loss's alpha={args.tversky_alpha}/beta={args.tversky_beta})")
         loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=3,
                                class_weights=structure_weights, focal_gamma=args.focal_gamma)
@@ -464,6 +481,13 @@ def main():
         flood_target = (mask == 3).long()
         flood_logits_2ch = torch.cat([-out["flood_logit"], out["flood_logit"]], dim=1)
         flood_loss = flood_loss_fn(flood_logits_2ch, flood_target)
+        if args.flood_bce_weight is not None:
+            # out["flood_logit"] is (B, 1, H, W); flood_target is (B, H, W) of 0/1.
+            # BCE stays computed per-pixel even once Tversky's gradient goes
+            # near-zero on an emptying predicted mask (docs/MANUAL.md S12.30)
+            # -- see --flood-bce-weight's own help text for the full rationale.
+            bce = F.binary_cross_entropy_with_logits(out["flood_logit"], flood_target.unsqueeze(1).float())
+            flood_loss = flood_loss + args.flood_bce_weight * bce
         return structure_loss + flood_loss
 
     start_epoch = 0
