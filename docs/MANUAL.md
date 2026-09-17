@@ -1600,6 +1600,37 @@ past the epoch-8-equivalent point (v12's epoch ~20, i.e. 8 epochs after
 the reinit) before this is called a durable fix rather than a promising
 early sign.
 
+### 12.27 Epochs 14-16: flooded F1 holds and improves, but coverage is declining again
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage (of 87) |
+|---|---|---|---|---|
+| 13 | 0.603 | 0.405 | 0.443 | 51/87 |
+| 14 | 0.603 | 0.416 | 0.396 | 46/87 |
+| 15 | 0.566 | 0.407 | 0.411 | 26/87 |
+| 16 | 0.561 | 0.427 | **0.535** (new project best) | 25/87 |
+
+**The good news**: flooded F1 has stayed well above zero for 4
+consecutive epochs since the reinit and just reached a new project
+best (0.535) at epoch 16 -- no collapse, unlike v10 (collapsed epoch 8)
+or v11 (never recovered). This is the longest a reinitialized/recovered
+flood head has held real signal in this project.
+
+**The honest caveat, reported plainly rather than glossed over**:
+coverage is declining across the same 4 epochs -- 51 -> 46 -> 26 -> 25
+of 87 validation images. This is the exact same shape S12.20 flagged
+for v10 (73->70->61->36->33) before v10 went on to fully collapse at
+epoch 8. S12.21 read a similar recovery-then-dip pattern in v10 as
+benign, and that read turned out to be wrong (S12.22). Naming that
+directly this time instead of repeating the same optimistic read: F1
+staying high on a SHRINKING set of images the model is willing to
+predict flooded in is compatible with a slower version of the same
+narrowing-then-collapsing mechanism, not necessarily a sign the fix
+has fully worked. Not calling this resolved either way yet -- continuing
+to monitor specifically for whether coverage keeps shrinking toward 0
+(pointing to a delayed collapse, same failure mode, just pushed back
+several epochs by the reinit) or stabilizes/recovers (pointing to a
+genuinely different, healthier training trajectory this time).
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
