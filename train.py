@@ -293,6 +293,13 @@ def main():
                          "from-scratch stem -- Phase 2 of the thesis, see docs/MANUAL.md "
                          "S12.10-S12.11. Requires `pip install timm` and a first-run internet "
                          "download of the pretrained weights.")
+    p.add_argument("--separate-flood-head", action="store_true",
+                    help="geoformer only: decouple 'flooded' from the joint 4-way softmax into "
+                         "its own binary head with its own gradient pathway, separate from the "
+                         "3-way background/building/road structure head. Motivated by forensic "
+                         "debugging of this project's own building/flooded collapse -- see "
+                         "docs/MANUAL.md S12.14 item 1, S12.17-S12.18. Off by default: exact "
+                         "prior single-head behavior, existing checkpoints unaffected.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -308,13 +315,17 @@ def main():
     else:
         model = DualAxisGeoFormer(
             GeoFormerConfig(num_classes=NUM_CLASSES, use_grid_attention=not args.no_grid_attention,
-                             pretrained_backbone=args.pretrained_backbone)
+                             pretrained_backbone=args.pretrained_backbone,
+                             separate_flood_head=args.separate_flood_head)
         ).to(device)
         if args.no_grid_attention:
             print("Ablation: grid attention DISABLED (block attention only)")
         if args.pretrained_backbone:
             print(f"Encoder: ImageNet-pretrained '{args.pretrained_backbone}' backbone "
                   f"(Phase 2) feeding the existing MaxViTBlock attention stages")
+        if args.separate_flood_head:
+            print("Separate flood head: 'flooded' decoupled from the joint softmax -- "
+                  "own gradient pathway, own loss term (docs/MANUAL.md S12.17-S12.18)")
     print(f"Model: {args.model}  parameters: {model.num_parameters():,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -328,8 +339,34 @@ def main():
               f"road={class_weights[2]} flooded={class_weights[3]}")
     if args.focal_gamma != 1.0:
         print(f"Focal Tversky gamma={args.focal_gamma} (concentrates loss on still-hard pixels within each class)")
-    loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES,
-                           class_weights=class_weights, focal_gamma=args.focal_gamma)
+
+    flood_loss_fn = None
+    if args.separate_flood_head:
+        structure_weights = class_weights[:3] if class_weights else None
+        flood_weights = [1.0, class_weights[3]] if class_weights else None
+        loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=3,
+                               class_weights=structure_weights, focal_gamma=args.focal_gamma)
+        flood_loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=2,
+                                     class_weights=flood_weights, focal_gamma=args.focal_gamma)
+    else:
+        loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES,
+                               class_weights=class_weights, focal_gamma=args.focal_gamma)
+
+    def compute_loss(out: dict, mask: torch.Tensor) -> torch.Tensor:
+        """Structure loss (background/building/road, computed only on
+        non-flooded pixels) + an independent flood loss (binary,
+        computed on every pixel) when the model has a separate flood
+        head; the original single 4-class loss otherwise. Isolated here
+        so train/val both use exactly the same combination logic."""
+        if flood_loss_fn is None:
+            return loss_fn(out["logits"], mask)
+        valid = mask != 3  # exclude flooded pixels: their true structure class was already lost at rasterization
+        structure_target = mask.clamp(max=2)  # placeholder value at excluded pixels; valid_mask zeroes their contribution
+        structure_loss = loss_fn(out["structure_logits"], structure_target, valid_mask=valid)
+        flood_target = (mask == 3).long()
+        flood_logits_2ch = torch.cat([-out["flood_logit"], out["flood_logit"]], dim=1)
+        flood_loss = flood_loss_fn(flood_logits_2ch, flood_target)
+        return structure_loss + flood_loss
 
     start_epoch = 0
     ckpt_dir = Path(args.checkpoint_dir)
@@ -443,7 +480,7 @@ def main():
             pre, post, mask = pre.to(device), post.to(device), mask.to(device)
             optimizer.zero_grad()
             out = model(pre, post)
-            loss = loss_fn(out["logits"], mask)
+            loss = compute_loss(out, mask)
             loss.backward()
             optimizer.step()
             train_loss_sum += loss.item()
@@ -458,7 +495,7 @@ def main():
             for pre, post, mask in val_loader:
                 pre, post, mask = pre.to(device), post.to(device), mask.to(device)
                 out = model(pre, post)
-                val_loss_sum += loss_fn(out["logits"], mask).item()
+                val_loss_sum += compute_loss(out, mask).item()
                 n_val_batches += 1
                 acc.update(out["logits"], mask)
         val_loss = val_loss_sum / max(1, n_val_batches)

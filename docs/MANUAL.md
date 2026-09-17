@@ -1214,6 +1214,81 @@ pathway into a representation that doesn't have to also serve
 background's overwhelming pixel-count advantage -- this debugging pass
 is real evidence FOR that fix, not just a restatement of the plan.
 
+### 12.18 Implementing the separate flood head (S12.14 item 1)
+
+Acted directly on S12.17's evidence. `GeoFormerConfig` gained a
+`separate_flood_head: bool = False` field. When set, `DualAxisGeoFormer`
+replaces the single 4-class `geo_head` with a shared `split_trunk`
+feeding two independent final layers: `structure_head` (3-way,
+background/building/road) and `flood_head` (1-channel binary). Each
+gets its own weights, so `flooded`'s gradient no longer has to share a
+representation -- or an output layer -- with the classes S12.17 showed
+are crowding it out. `forward()` still returns a synthesized 4-channel
+`out["logits"]` (`cat([structure_logits, flood_logit])`) purely for
+backward compatibility with `evaluate.py`/`demo.py`/`serve.py`/
+`ConfusionAccumulator`/the dashboard, none of which needed to change.
+
+**Backward compatibility, deliberately protected**: the default
+(`separate_flood_head=False`) path's `geo_head` module is untouched,
+byte-for-byte the same `nn.Sequential` as before this feature existed --
+verified by a test that checks `hasattr(model, "geo_head")` is true and
+`hasattr(model, "structure_head"/"flood_head"/"split_trunk")` is false
+on the default path. This was caught as a bug in my own first draft:
+an earlier version renamed the shared trunk to `geo_trunk` on BOTH
+paths, which would have silently broken `load_state_dict` for every
+checkpoint saved before this change (key mismatch, e.g.
+`geo_head.0.weight` vs `geo_trunk.0.weight`). Fixed before any test ran.
+
+**Loss side**: `TverskyLoss.forward()` gained an optional `valid_mask`
+parameter -- pixels where it's `False` are excluded from every
+tp/fp/fn sum entirely, not diluted. This matters specifically for the
+structure loss: a pixel labeled `flooded` in the ground truth has no
+recoverable label for what its underlying structure (building/road/
+background) actually was -- the original rasterization already
+overwrote that information (see docs/EXTERNAL_DATA_PLAN.md for what
+recovering it would take, out of scope here). Guessing a fallback
+class for those pixels would be actively wrong training signal;
+excluding them via `valid_mask=(mask != 3)` is the honest choice.
+Verified by a test that a masked pixel, even made maximally wrong,
+produces byte-identical loss to the same tensor with that pixel
+physically removed -- not just "small effect", genuinely zero.
+
+`train.py` wiring: a new `--separate-flood-head` flag constructs two
+`TverskyLoss` instances (structure: `num_classes=3`; flood:
+`num_classes=2`, treated as background-vs-flooded binary via
+`cat([-flood_logit, flood_logit])`), reusing the run's existing
+`--tversky-alpha/beta`/`--focal-gamma` and splitting `--class-weights`
+across both (`[:3]` for structure, `[1.0, w_flooded]` for flood). A
+`compute_loss(out, mask)` helper isolates the branch so train and val
+loops share identical combination logic -- `structure_loss(structure_
+target=mask.clamp(max=2), valid_mask=mask!=3) + flood_loss(target=
+mask==3)`.
+
+**Testing**: 6 new tests (4 in `tests/test_model.py`, 2 in
+`tests/test_losses.py`) -- shape correctness, the backward-compat
+`hasattr` check, gradient flow to both new heads independently, the
+4-class-only guard rejecting `separate_flood_head=True` with
+`num_classes != 4`, `valid_mask=None` matching prior behavior exactly,
+and the masked-pixel-contributes-zero proof. Full suite: 57 passed
+(`python -m pytest tests/ -q`), including a real end-to-end smoke test
+of `train.py --separate-flood-head` on synthetic data (ran, logged a
+checkpoint, no crash; that smoketest run was deleted from the
+Postgres `training_runs`/`epoch_logs` tables afterward so it doesn't
+pollute the dashboard's real experiment history).
+
+**Status**: implemented and tested, not yet validated on real data.
+v9 (augmentation, no separate head) was stopped at epoch 4 -- its log
+confirms the collapse pattern is exactly as settled as S12.16 already
+documented (`val_f1_building=0.0`, `val_f1_flooded=0.0` at both epoch
+3 and 4) -- freeing the GPU for v10, which combines this fix with the
+rest of the proven stack (pretrained backbone, oversampling,
+class-weighted loss, D4 augmentation, `min_f1` checkpoint selection,
+backbone freezing). v10's first several epochs are the real test of
+whether S12.17's hypothesis holds: if `flooded`/`building` F1 stays
+nonzero past epoch 3 with a separate head, the collapse was indeed a
+shared-representation problem, not something the loss/backbone/
+augmentation levers alone could fix.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

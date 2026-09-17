@@ -247,6 +247,20 @@ class GeoFormerConfig:
     # gradient flow, projection channels) fast and without a network call,
     # not something a real training run should ever set.
     pretrained: bool = True
+    # Decouple `flooded` from the joint 4-way softmax (docs/MANUAL.md
+    # S12.14 item 1, S12.17): False (default, exact prior behavior) keeps
+    # one Geo-Head producing all 4 classes in direct competition. True
+    # splits the head into a 3-way structure classifier
+    # (background/building/road) and an independent binary flood
+    # classifier, each with its own final conv layer and its own loss
+    # term (see losses.py, train.py) -- giving `flooded` its own gradient
+    # pathway into the shared decoder features instead of one that has to
+    # also serve background's overwhelming per-pixel dominance. A
+    # synthesized 4-channel `logits` tensor is still returned for
+    # backward compatibility with every existing consumer (evaluate.py,
+    # demo.py, serve.py, ConfusionAccumulator, the dashboard) -- none of
+    # them need to change to support this.
+    separate_flood_head: bool = False
 
 
 class SiameseMaxViTEncoder(nn.Module):
@@ -416,12 +430,32 @@ class DualAxisGeoFormer(nn.Module):
             UpBlock(dims[i + 1], dims[i], dims[i]) for i in reversed(range(len(dims) - 1))
         ])
         self.final_up = nn.ConvTranspose2d(dims[0], dims[0] // 2, 2, stride=2)
-        self.geo_head = nn.Sequential(
-            nn.Conv2d(dims[0] // 2, dims[0] // 2, 3, padding=1),
-            nn.BatchNorm2d(dims[0] // 2),
-            nn.GELU(),
-            nn.Conv2d(dims[0] // 2, cfg.num_classes, 1),
-        )
+        if cfg.separate_flood_head:
+            if cfg.num_classes != 4:
+                raise ValueError("separate_flood_head assumes the 4-class "
+                                  "background/building/road/flooded scheme")
+            # A separate trunk+heads module tree (not reusing `geo_head`'s
+            # name/shape) -- keeping the default path's module structure
+            # byte-for-byte unchanged from before this feature existed is
+            # what lets every EXISTING checkpoint still load with
+            # separate_flood_head=False, its default. Renaming/restructuring
+            # geo_head itself for both modes would silently break
+            # load_state_dict for every checkpoint this project has ever
+            # produced.
+            self.split_trunk = nn.Sequential(
+                nn.Conv2d(dims[0] // 2, dims[0] // 2, 3, padding=1),
+                nn.BatchNorm2d(dims[0] // 2),
+                nn.GELU(),
+            )
+            self.structure_head = nn.Conv2d(dims[0] // 2, 3, 1)  # background, building, road
+            self.flood_head = nn.Conv2d(dims[0] // 2, 1, 1)      # binary: flooded or not
+        else:
+            self.geo_head = nn.Sequential(
+                nn.Conv2d(dims[0] // 2, dims[0] // 2, 3, padding=1),
+                nn.BatchNorm2d(dims[0] // 2),
+                nn.GELU(),
+                nn.Conv2d(dims[0] // 2, cfg.num_classes, 1),
+            )
 
     def forward(self, pre: torch.Tensor, post: torch.Tensor):
         feats_pre, _ = self.encoder(pre)
@@ -436,10 +470,8 @@ class DualAxisGeoFormer(nn.Module):
 
         x = self.final_up(x)
         x = F.interpolate(x, size=pre.shape[-2:], mode="bilinear", align_corners=False)
-        logits = self.geo_head(x)
 
-        return {
-            "logits": logits,                    # (B, num_classes, H, W)
+        out = {
             # BUG THIS FIXES: this read saliencies_post[-2] with a comment
             # claiming "deepest usable stage" -- but the actual deepest
             # stage (-1) IS usable (verified: correct shape, no NaN, at
@@ -450,6 +482,25 @@ class DualAxisGeoFormer(nn.Module):
             # signal -- exactly what Phase 4 bridging wants).
             "grid_saliency": saliencies_post[-1],  # deepest stage, for Phase 4 bridging
         }
+
+        if self.cfg.separate_flood_head:
+            trunk_out = self.split_trunk(x)
+            structure_logits = self.structure_head(trunk_out)  # (B, 3, H, W): bg/building/road
+            flood_logit = self.flood_head(trunk_out)           # (B, 1, H, W): flooded or not
+            out["structure_logits"] = structure_logits
+            out["flood_logit"] = flood_logit
+            # A synthesized 4-channel tensor so every EXISTING consumer
+            # (evaluate.py, demo.py, serve.py, ConfusionAccumulator, the
+            # dashboard) keeps working unchanged -- argmax naturally picks
+            # the flooded channel whenever the independent flood head is
+            # more confident than any structure class, the same real
+            # decision the original single softmax made, just no longer
+            # sharing gradients to get there.
+            out["logits"] = torch.cat([structure_logits, flood_logit], dim=1)
+        else:
+            out["logits"] = self.geo_head(x)  # (B, num_classes, H, W)
+
+        return out
 
     def num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters())

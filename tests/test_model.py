@@ -180,6 +180,62 @@ def test_set_backbone_frozen_is_noop_without_a_backbone():
     model.encoder.set_backbone_frozen(True)  # must not raise
 
 
+def test_separate_flood_head_produces_structure_and_flood_outputs():
+    cfg = GeoFormerConfig(**{**_tiny_config().__dict__, "separate_flood_head": True})
+    model = DualAxisGeoFormer(cfg)
+    model.eval()
+    pre = torch.randn(2, 3, 32, 32)
+    post = torch.randn(2, 3, 32, 32)
+    with torch.no_grad():
+        out = model(pre, post)
+    assert out["structure_logits"].shape == (2, 3, 32, 32)  # background/building/road
+    assert out["flood_logit"].shape == (2, 1, 32, 32)
+    # The synthesized 4-channel tensor exists for backward compatibility
+    # with every consumer that expects out["logits"] unchanged.
+    assert out["logits"].shape == (2, 4, 32, 32)
+    assert torch.equal(out["logits"][:, :3], out["structure_logits"])
+    assert torch.equal(out["logits"][:, 3:4], out["flood_logit"])
+
+
+def test_separate_flood_head_default_false_is_unaffected():
+    """The default path must have no structure_head/flood_head/split_trunk
+    attributes at all, and its geo_head must keep the exact module
+    structure it had before this feature existed -- an existing
+    checkpoint's state_dict keys must still match."""
+    model = DualAxisGeoFormer(_tiny_config())
+    assert not hasattr(model, "structure_head")
+    assert not hasattr(model, "flood_head")
+    assert not hasattr(model, "split_trunk")
+    assert hasattr(model, "geo_head")
+    pre = torch.randn(1, 3, 32, 32)
+    post = torch.randn(1, 3, 32, 32)
+    out = model(pre, post)
+    assert "structure_logits" not in out
+    assert "flood_logit" not in out
+    assert out["logits"].shape == (1, 4, 32, 32)
+
+
+def test_separate_flood_head_gradients_flow_to_both_heads():
+    cfg = GeoFormerConfig(**{**_tiny_config().__dict__, "separate_flood_head": True})
+    model = DualAxisGeoFormer(cfg)
+    model.train()
+    pre = torch.randn(1, 3, 32, 32)
+    post = torch.randn(1, 3, 32, 32)
+    out = model(pre, post)
+    (out["structure_logits"].sum() + out["flood_logit"].sum()).backward()
+    assert model.structure_head.weight.grad is not None
+    assert model.flood_head.weight.grad is not None
+    assert not torch.all(model.structure_head.weight.grad == 0)
+    assert not torch.all(model.flood_head.weight.grad == 0)
+
+
+def test_separate_flood_head_rejects_non_4_class_config():
+    import pytest
+    cfg = GeoFormerConfig(**{**_tiny_config().__dict__, "separate_flood_head": True, "num_classes": 5})
+    with pytest.raises(ValueError, match="separate_flood_head"):
+        DualAxisGeoFormer(cfg)
+
+
 if __name__ == "__main__":
     test_forward_pass_output_shape()
     test_forward_pass_batch_size_greater_than_one()
@@ -190,4 +246,8 @@ if __name__ == "__main__":
     test_freeze_backbone_stops_gradients_and_saves_compute()
     test_unfreeze_backbone_restores_gradient_flow()
     test_set_backbone_frozen_is_noop_without_a_backbone()
+    test_separate_flood_head_produces_structure_and_flood_outputs()
+    test_separate_flood_head_default_false_is_unaffected()
+    test_separate_flood_head_gradients_flow_to_both_heads()
+    test_separate_flood_head_rejects_non_4_class_config()
     print("All tests passed.")

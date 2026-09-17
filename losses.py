@@ -64,10 +64,30 @@ class TverskyLoss(nn.Module):
         else:
             self.class_weights = None
 
-    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, logits: torch.Tensor, target: torch.Tensor,
+                valid_mask: torch.Tensor | None = None) -> torch.Tensor:
         # logits: (B, C, H, W); target: (B, H, W) long class indices
+        # valid_mask: optional (B, H, W) bool -- pixels where False are
+        # excluded from every tp/fp/fn sum entirely, as if they weren't
+        # part of the image at all. Added for the separate-flood-head
+        # architecture (docs/MANUAL.md S12.17-S12.18): the structure head
+        # (background/building/road) has no ground truth for what a
+        # FLOODED pixel's underlying structure was -- the original
+        # rasterization already overwrote that information with class 3,
+        # and recovering it needs the raw GeoJSON re-processed (see
+        # docs/EXTERNAL_DATA_PLAN.md), out of scope here. Excluding those
+        # pixels from the structure loss (rather than guessing a fallback
+        # class for them) is the honest choice -- a guessed label would be
+        # actively wrong training signal, worse than no signal.
+        # None (default) means every pixel counts, unchanged prior
+        # behavior, verified by test.
         probs = F.softmax(logits, dim=1)
         target_onehot = F.one_hot(target, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
+
+        if valid_mask is not None:
+            m = valid_mask.unsqueeze(1).float()  # (B, 1, H, W), broadcasts over the class dim
+            probs = probs * m
+            target_onehot = target_onehot * m
 
         dims = (0, 2, 3)
         tp = (probs * target_onehot).sum(dim=dims)

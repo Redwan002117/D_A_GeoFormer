@@ -134,6 +134,36 @@ def test_focal_gamma_must_be_positive():
         TverskyLoss(focal_gamma=-1.0)
 
 
+def test_valid_mask_none_matches_prior_behavior():
+    """The default (valid_mask=None) must be unchanged -- every pixel
+    counts, exact original behavior."""
+    torch.manual_seed(3)
+    logits = torch.randn(2, 4, 8, 8)
+    target = torch.randint(0, 4, (2, 8, 8))
+    plain = TverskyLoss()(logits, target).item()
+    explicit_all_valid = TverskyLoss()(logits, target, valid_mask=torch.ones(2, 8, 8, dtype=torch.bool)).item()
+    assert abs(plain - explicit_all_valid) < 1e-6
+
+
+def test_valid_mask_excludes_pixels_entirely():
+    """A pixel masked out must have NO effect on the loss, not even a
+    diluted one -- verified by making an invalid pixel maximally wrong
+    (would spike the loss if counted) and confirming the loss matches a
+    version of the same tensors with that pixel simply removed."""
+    logits = torch.zeros(1, 4, 1, 3)
+    logits[:, 0] = 10.0  # confidently predicts class 0 everywhere
+    target = torch.tensor([[[0, 0, 3]]])  # last pixel is class 3 -- a total miss if counted
+
+    mask_last_pixel_out = torch.tensor([[[True, True, False]]])
+    loss_with_bad_pixel_excluded = TverskyLoss()(logits, target, valid_mask=mask_last_pixel_out).item()
+
+    # Same loss computed on just the two valid pixels, mask omitted entirely --
+    # must match, proving the masked pixel contributed nothing, not a
+    # smaller-but-nonzero amount.
+    loss_pixel_physically_removed = TverskyLoss()(logits[:, :, :, :2], target[:, :, :2]).item()
+    assert abs(loss_with_bad_pixel_excluded - loss_pixel_physically_removed) < 1e-5
+
+
 if __name__ == "__main__":
     test_loss_is_near_zero_for_a_perfect_prediction()
     test_loss_is_bounded_between_zero_and_one()
