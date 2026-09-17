@@ -487,13 +487,23 @@ checkpoints captured along the way:
 | 56 | 0.072 | 0.000 / 0.000 (unchanged throughout) |
 | 64 | 0.159 | 0.000 / 0.000 |
 | 74 | 0.203 | 0.000 / 0.000 |
+| 93 | 0.275* | 0.000 / 0.000 |
 
 `road` is genuinely, steadily improving with more training (0.072 → 0.159 →
-0.203) — real learning, not a metric artifact (it has real, non-zero
-prediction coverage throughout, unlike building/flooded). It is still well
-below the baseline's 0.431 at this point; whether GeoFormer would
-eventually close or exceed that gap with more epochs than this environment
-allowed to run in one sitting is genuinely unknown, not implied either way.
+0.203 → 0.275) — real learning, not a metric artifact (it has real,
+non-zero prediction coverage throughout, unlike building/flooded, which
+stay at exactly 0 predicted-in images every single checkpoint checked).
+Approaching the baseline's 0.431; whether it would eventually close or
+exceed that gap with more epochs than this environment can run in one
+sitting is genuinely unknown, not implied either way.
+
+*Epoch 93's number isn't perfectly apples-to-apples with the three before
+it: this checkpoint was the first evaluated after §12.5's train/val split
+fix (`SpaceNet8Dataset.split()`, a stable hash-based split replacing
+`random_split`), so it's measured against a genuinely different -- if now
+correctly stable going forward -- 87-tile held-out set than epochs 56-74
+were. The direction (continued real improvement) is consistent either way;
+the exact number isn't a clean continuation of the same held-out set.
 
 **A second real bug found and fixed in the course of this**: the training
 log CSV was only written once, at the very end of the full epoch loop —
@@ -519,6 +529,36 @@ the real, current state — which is what happened — rather than continuing
 to retry the same thing repeatedly on the chance it works. `notebooks/
 train_on_colab.ipynb` sidesteps this entirely for anyone who wants to
 continue this specific run further.
+
+### 12.5 Train/val split instability — found during a general bug sweep, not this experiment
+
+Separately from the OOM/metric issues above, a systematic bug sweep (asked
+for directly: "make it more perfect and error free") found that
+`build_dataloaders`' `torch.utils.data.random_split` draws a split that
+depends on the dataset's current length and index order — both of which
+changed every time `real_sn8_dataset_full` grew across this project's
+sessions (202 → 352 → 801 tiles). A tile held out for validation in one
+run could silently end up in the next `--resume`'d run's training set,
+with no warning printed either way. **Every "held-out validation" F1
+reported anywhere above this section, across every resumed run on a
+growing dataset, was not actually measured against one stable held-out
+set** — the split moved under it each time the dataset grew.
+
+Fixed with `SpaceNet8Dataset.split()`: each tile's own `tile_id` is hashed
+to assign it to train or val, independent of dataset size or list order,
+so a tile stays on the same side forever once assigned. Verified with a
+regression test that a tile's assignment is provably unchanged when 250
+more tiles are added around it. `evaluate.py` gained a `--held-out-only`
+flag to evaluate specifically against this same stable split.
+
+This does not retroactively invalidate the qualitative findings above (the
+building/flooded collapse was confirmed by prediction-coverage checks
+across the *entire* dataset, train and val combined, which the split
+choice doesn't affect) — but any specific held-out F1 number reported
+*before* this fix landed should be read as measured against whatever split
+happened to exist at that moment, not a consistent one across runs. Every
+held-out number reported from §12.4's epoch 93 checkpoint onward uses the
+corrected, stable split.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
