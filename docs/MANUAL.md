@@ -1357,6 +1357,28 @@ the probability everywhere at once. Not distinguishable from 5 epochs
 alone -- continuing to monitor whether coverage keeps falling toward 0
 (pointing to (b)) or stabilizes (pointing to (a)).
 
+### 12.21 Epochs 6-7: the coverage question resolves toward the benign explanation
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage (of 87) |
+|---|---|---|---|---|
+| 5 | 0.561 | 0.392 | 0.250 | 33/87 |
+| 6 | 0.574 | 0.415 | 0.396 | 28/87 |
+| 7 | 0.562 | 0.372 | **0.482** (new project best) | 41/87 |
+
+S12.20 asked whether falling `flooded` coverage would keep declining
+toward 0 (a slower collapse) or stabilize (benign). It bottomed at 28
+(epoch 6) and **recovered** to 41 (epoch 7) -- not a monotonic decline
+toward zero. Combined with flooded F1 reaching a new project-best of
+0.482 at epoch 7 (previous best 0.396, epoch 4), this leans toward the
+benign reading: the model's flooded predictions are fluctuating
+epoch-to-epoch the way a genuinely learning classifier's do, not
+narrowing toward silence. Building F1 also remains stable in the
+0.52-0.57 range across epochs 3-7, no sign of the joint-softmax
+collapse recurring through 7 real epochs -- more than double the
+longest any prior run survived without it (every one of v1-v9 collapsed
+by epoch 3-4). Still calling this provisional, not concluded --
+continuing to epoch 10+.
+
 Four real bottlenecks were hit while building this, in this environment
 (Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
 one below is what was actually observed, not a generic list.
