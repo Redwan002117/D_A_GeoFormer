@@ -152,15 +152,22 @@ def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
             n_building = sum(1 for w in weights if w > 1.0)
             print(f"Oversampling rare classes: {n_building}/{len(train_idx)} train tiles "
                   f"contain building/flooded pixels and are drawn more often per epoch")
-            train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, num_workers=0)
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,
+                                       num_workers=args.num_workers, persistent_workers=args.num_workers > 0)
         else:
-            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                                       num_workers=args.num_workers, persistent_workers=args.num_workers > 0)
     else:
         train_ds = SyntheticFloodDataset(length=args.synthetic_train_size, image_size=args.image_size, base_seed=0)
         val_ds = SyntheticFloodDataset(length=args.synthetic_val_size, image_size=args.image_size, base_seed=100_000)
+        # Synthetic samples are generated in-process (make_synthetic_sample) --
+        # cheap enough that worker-process overhead isn't worth it here even
+        # if --num-workers is passed; real data is where it matters.
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
+                             num_workers=args.num_workers if args.data_dir else 0,
+                             persistent_workers=(args.num_workers > 0) if args.data_dir else False)
     return train_loader, val_loader
 
 
@@ -184,6 +191,12 @@ def main():
                          "for why oversampling alone didn't prevent the building/flooded collapse.")
     p.add_argument("--synthetic-train-size", type=int, default=64)
     p.add_argument("--synthetic-val-size", type=int, default=16)
+    p.add_argument("--num-workers", type=int, default=0,
+                    help="Real data only (--data-dir): DataLoader worker processes for image "
+                         "decode/resize, overlapping the NEXT batch's loading with the CURRENT "
+                         "batch's forward/backward instead of doing both serially. Pure wall-clock "
+                         "speedup, no effect on what gets trained -- try min(4, os.cpu_count()-1) "
+                         "or so; ignored for the synthetic dataset (cheap enough in-process).")
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     p.add_argument("--checkpoint-every", type=int, default=10,
                     help="Save a non-overwritten epoch_N.pt snapshot every N epochs, independent "
