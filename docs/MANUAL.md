@@ -1631,6 +1631,59 @@ to monitor specifically for whether coverage keeps shrinking toward 0
 several epochs by the reinit) or stabilizes/recovers (pointing to a
 genuinely different, healthier training trajectory this time).
 
+### 12.28 Epochs 19-20: it collapsed again -- reinitialization delays the collapse, doesn't fix it
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage |
+|---|---|---|---|---|
+| 18 | 0.543 | 0.449 | 0.329 | 18/87 |
+| **19** | 0.552 | 0.403 | **0.000** | **0/87** |
+| **20** | 0.566 | 0.405 | **0.000** | **0/87** |
+
+**The honest, full result of the reinitialization experiment (S12.25-S12.28),
+stated plainly**: the fresh flood head produced a real, substantial
+recovery -- 6 epochs (13-18) with genuine flooded detection, a new
+project-best F1 of 0.535 at epoch 16 -- but then collapsed again at
+epoch 19, exactly the shape S12.20 and S12.27 both flagged as a warning
+sign and both times correctly. Reinitializing the head delayed the
+collapse (7 epochs post-reinit vs v10's 8 epochs from a cold start) and
+raised the peak (0.535 vs v10's 0.482), but did not produce a durable
+fix. Building/road stayed healthy and decoupled throughout, including
+through the recollapse (0.552-0.566 / 0.403-0.449 at epochs 19-20) --
+that part of S12.17-S12.25's diagnosis remains solid and repeatedly
+confirmed across v10, v11, and v12.
+
+**What this changes about the overall picture**: the separate-head
+architecture (S12.14 item 1, S12.17-S12.18) successfully and repeatedly
+solves the CROSS-class problem -- building/road no longer collapse
+together with flooded, confirmed across three independent runs now.
+But flooded's OWN collapse is not an architecture problem or a loss-
+weighting problem in the way tested here -- three different
+interventions (separate head alone/v10, stronger flood-specific loss on
+a saturated head/v11, stronger flood-specific loss on a FRESH
+head/v12) all eventually produced the same outcome: flooded's
+prediction narrows and then collapses, on a timescale of roughly
+7-8 epochs regardless of starting point. The consistent recurrence
+across genuinely different interventions is itself informative: it
+points toward the amount and diversity of real flooded-pixel training
+data being the actual bottleneck, not the model architecture or the
+loss function's weighting -- both of which have now been tried and
+both improved matters without fixing the underlying problem.
+
+**Recommendation**: `docs/EXTERNAL_DATA_PLAN.md`'s trigger condition
+("the architecture-level fix has been tried and ruled out first") is
+now genuinely met -- not just the architecture fix, but a loss-weighting
+fix and a head-reinitialization fix on top of it, all three tried, all
+three real, none durable. The next real lever left un-tried is more/
+different flooded-labeled training data, per that plan's Phase 1
+(Microsoft Global ML Building Footprints) recommendation. The best
+checkpoint from this whole v10-v12 sequence -- v12's epoch 16
+(building F1 0.561, road F1 0.427, flooded F1 0.535, all three
+detecting) -- is preserved at `checkpoints_v12/best.pt` (min_f1
+selection correctly protected it from being overwritten by the later
+collapse) and is this project's best real result to date, honestly
+reported with its own limitation: it is a peak the training run passed
+through, not a state it converged to and stayed at.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
