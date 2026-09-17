@@ -770,6 +770,52 @@ in Postgres's "aborted transaction" state for the rest of a run after any
 single transient failure -- reproduced directly against the live database
 and fixed with an explicit `rollback()`.
 
+### 12.10 v4 (weights 1,2,2,4) through its first milestone checkpoint -- a clearer, still honest, still not-solved picture
+
+| epoch | val_loss | building F1 (cov) | road F1 (cov) | flooded F1 (cov) |
+|---|---|---|---|---|
+| 1 | 0.830 | 0.197 (83/87) | 0.100 (81/87) | 0.068 (83/87) |
+| 2 | 0.831 | 0.140 (84/87) | 0.095 (85/87) | 0.040 (81/87) |
+| 3 | 0.795 | 0.180 (82/87) | 0.142 (85/87) | 0.064 (85/87) |
+| 4 | 0.734 | **0.000 (0/87)** | 0.202 (85/87) | 0.087 (86/87) |
+| 5 | 0.727 | 0.000 (0/87) | 0.212 (85/87) | 0.089 (86/87) |
+| 6 | 0.735 | 0.000 (0/87) | 0.199 (85/87) | 0.071 (85/87) |
+| 7 | 0.733 | 0.000 (0/87) | 0.184 (85/87) | 0.054 (86/87) |
+| 8 | 0.740 | 0.000 (0/87) | 0.189 (84/87) | 0.055 (84/87) |
+| 9 | 0.724 | 0.000 (0/87) | 0.217 (86/87) | **0.098 (83/87)** (best flooded yet) |
+| 10 | 0.427 | 0.000 (0/87) | 0.211 (83/87) | **0.000 (0/87)** |
+
+The clearest signal in this project's real-data history: `road` -- 1x
+weight in v3, 2x weight here, present in nearly every tile regardless of
+oversampling -- is the ONE class that stayed non-zero across every single
+one of these 10 epochs, every configuration tried so far. `building`
+collapsed at epoch 4 and never recovered through epoch 10. `flooded` held
+on through epoch 9 (its best epoch of the whole project, F1 0.098) and
+then also collapsed exactly at epoch 10, the same epoch `val_loss` dropped
+sharply (0.724 -> 0.427) -- consistent with the model finding a lower-loss
+solution that fits background+road more confidently and abandons the
+harder, rarer classes rather than one that actually improved on all four.
+
+**Honest synthesis across v2/v3/v4** (three different sampling/weighting
+configurations, all summarized here rather than left scattered): every
+configuration tried produces SOME partial collapse, just a different one
+each time -- v2 (oversampling only) collapsed both building and flooded;
+v3 (aggressive 1,3,1,8 weights) collapsed road instead; v4 (moderate
+1,2,2,4 weights) holds building/flooded longer but building still
+collapses by epoch 4 and flooded eventually follows. This is consistent
+with, not contradicting, the S12.8 research finding: a single joint 4-way
+per-pixel softmax forces every foreground class to compete directly for
+the same probability mass, and sampling/loss-weighting tricks can shift
+WHICH class loses that competition without changing that a competition
+exists at all. The real fix the actual SpaceNet-8 winners used --
+decoupling flood detection into its own model/head instead of one joint
+softmax, plus a pretrained backbone -- remains the next real lever, named
+honestly rather than implied to be solved by hyperparameter tuning alone.
+
+The epoch-10 checkpoint is safely preserved as `checkpoints/epoch_10.pt`
+(the `--checkpoint-every` fix from S12.7), independent of whatever
+`last.pt` looks like by the time anyone reads this.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
