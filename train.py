@@ -175,6 +175,13 @@ def main():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--tversky-alpha", type=float, default=0.3)
     p.add_argument("--tversky-beta", type=float, default=0.7)
+    p.add_argument("--class-weights", type=str, default=None,
+                    help="Comma-separated per-class weight for TverskyLoss's class average, in "
+                         "background,building,road,flooded order (e.g. '1,3,1,5'). Default: uniform "
+                         "(the original behavior). Complements --oversample-rare-classes: sampling "
+                         "controls how OFTEN a rare-class tile is seen, this controls how much the "
+                         "LOSS cares about that class once it is -- see docs/MANUAL.md S12.7-S12.8 "
+                         "for why oversampling alone didn't prevent the building/flooded collapse.")
     p.add_argument("--synthetic-train-size", type=int, default=64)
     p.add_argument("--synthetic-val-size", type=int, default=16)
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints")
@@ -221,7 +228,16 @@ def main():
     print(f"Model: {args.model}  parameters: {model.num_parameters():,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES)
+    class_weights = None
+    if args.class_weights:
+        class_weights = [float(w) for w in args.class_weights.split(",")]
+        if len(class_weights) != NUM_CLASSES:
+            raise SystemExit(f"--class-weights needs {NUM_CLASSES} comma-separated values "
+                              f"(background,building,road,flooded), got {len(class_weights)}: {args.class_weights}")
+        print(f"Loss class weights: background={class_weights[0]} building={class_weights[1]} "
+              f"road={class_weights[2]} flooded={class_weights[3]}")
+    loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES,
+                           class_weights=class_weights)
 
     start_epoch = 0
     ckpt_dir = Path(args.checkpoint_dir)

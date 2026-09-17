@@ -665,8 +665,72 @@ rather than deleted) with the gentler oversampling boost active from the
 very first epoch and milestone snapshots on. Starting fresh from epoch 0
 with oversampling already active is a deliberately different situation
 from a resume: there's no already-converged optimum to catastrophically
-forget out of. Results will be appended here as real epochs land, with
-the coverage-collapse check applied the same way every prior section did.
+forget out of.
+
+That run (v2) reproduced the same failure, just delayed: `building` and
+`flooded` coverage decayed monotonically from strong (81/87, 82/87 images
+at epoch 1) to exactly zero by epoch 4, and stayed at exactly zero through
+epoch 8 -- five straight epochs. Oversampling alone (fixing how OFTEN a
+rare-class tile is seen) delayed the collapse by a few epochs but did not
+prevent it, which pointed at the other half of the problem: how much the
+LOSS itself cares about that class once a tile is seen.
+
+### 12.8 Researching how the actual SpaceNet-8 winners handled this, and a real loss bug it surfaced
+
+Rather than keep guessing at oversampling multipliers, this stopped to
+research how SpaceNet-8's actual competitors handled the exact same
+"flooded" class-imbalance problem (flooded pixels are well under 1% of
+this dataset). Findings, sourced:
+
+- The **5th-place solution** (motokimura) does not use tile-level
+  oversampling at all. It handles the imbalance with (a) **mosaicing**
+  adjacent tiles together to synthesize more flood-containing training
+  crops, (b) **pretrained backbones** -- fine-tuning the winning
+  SpaceNet-5 road model (SE-ResNeXt-50) and an xView2 building model
+  (DenseNet-161) at a low learning rate (1e-5), stated to have
+  "significantly improved the score," and (c) treating flood detection as
+  a **separate model** (a Siamese U-Net) from building/road segmentation,
+  not one joint multiclass head.
+  [github.com/motokimura/spacenet8_solution_5th-place](https://github.com/motokimura/spacenet8_solution_5th-place)
+- Other top solutions used **swin-transformer backbones pretrained on
+  ImageNet-22K**, with UPerNet/Segformer decoders per task.
+  [SpaceNet 8: A Closer Look at the Winning Approaches](https://medium.com/@SpaceNet_Project/spacenet-8-a-closer-look-at-the-winning-approaches-75ff4033bf53)
+- Separately, the class-imbalanced-segmentation literature (e.g. "Unified
+  Focal loss: Generalising Dice and cross entropy-based losses to handle
+  class imbalanced ... segmentation," Yeung et al. 2022; the original
+  Focal Tversky Loss paper, Abraham & Khan 2018) is consistent that
+  Tversky/Dice losses need an **explicit per-class weight** for severe
+  imbalance, not just alpha/beta's precision/recall tradeoff.
+
+**This surfaced a real, previously-unnoticed bug in `losses.py`**:
+`TverskyLoss.forward` computed `1.0 - tversky.mean()` -- averaging the
+per-class Tversky index across all 4 classes with **equal weight**.
+`flooded` (well under 0.1% of pixels dataset-wide) was getting exactly
+the same 25% share of the loss as `background` (~85%+ of pixels, and
+already near-perfect almost immediately). This had been sitting in the
+loss the entire project, silently undermining every real-data run,
+independent of the oversampling experiments above.
+
+Two architectural findings from this research are real but out of scope
+to act on immediately: a pretrained backbone (this project's MaxViT
+encoder is randomly initialized, not ImageNet-pretrained like the winners'
+encoders) and a separate flood-classification head/model (rather than one
+joint 4-way per-pixel softmax forcing `flooded` to compete directly
+against `background`/`building`/`road` in a single decision) are both
+bigger changes than a loss-function fix -- named here honestly as the
+next real lever if the fix below still isn't enough, not silently
+deferred.
+
+**Fix applied**: `TverskyLoss` now takes an optional `class_weights`
+list -- a weighted average instead of a uniform mean (`class_weights=None`
+preserves the exact original behavior, verified by test). `train.py`
+gained `--class-weights` (comma-separated, `background,building,road,flooded`
+order). Training was restarted a third time
+(`training_log_geoformer_801_v3.csv`, v1/v2 logs preserved, not deleted)
+combining both fixes: `--oversample-rare-classes --class-weights "1,3,1,8"`
+-- building weighted 3x, flooded 8x relative to background/road's
+baseline 1x, chosen to reflect flooded being the rarer and harder of the
+two collapsed classes. Results will be appended here as real epochs land.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 

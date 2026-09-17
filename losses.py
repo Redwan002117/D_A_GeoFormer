@@ -10,18 +10,43 @@ import torch.nn.functional as F
 
 
 class TverskyLoss(nn.Module):
-    def __init__(self, alpha: float = 0.3, beta: float = 0.7, smooth: float = 1.0, num_classes: int = 4):
+    def __init__(self, alpha: float = 0.3, beta: float = 0.7, smooth: float = 1.0, num_classes: int = 4,
+                 class_weights: list[float] | None = None):
         """
         alpha weights false positives, beta weights false negatives.
         beta > alpha (default 0.7 / 0.3) means the loss is penalized more
         for MISSING a flooded pixel than for over-predicting one -- see
         thesis Phase 3.
+
+        BUG THIS FIXES: `1.0 - tversky.mean()` averages the per-class
+        Tversky index with EQUAL weight across all num_classes -- giving
+        `flooded` (well under 0.1% of pixels dataset-wide) the same 25%
+        share of the loss as `background` (~85%+ of pixels, and already
+        near-perfect almost immediately). Standard practice for severe
+        class imbalance is to combine Tversky/Dice with an explicit
+        per-class weight, not a uniform mean (see e.g. "Unified Focal
+        loss: Generalising Dice and cross entropy-based losses to handle
+        class imbalanced ... segmentation", Yeung et al. 2022, and the
+        original Focal Tversky Loss paper, Abraham & Khan 2018). Found
+        while diagnosing this project's own real-data building/flooded
+        collapse (docs/MANUAL.md S12.3-S12.7): tile-level oversampling
+        alone (train.py --oversample-rare-classes) delayed but did not
+        prevent the same collapse, which pointed at the LOSS's per-class
+        weighting, not just how often a tile is sampled, as the other
+        half of the fix. `class_weights` defaults to None (uniform mean,
+        the original behavior) so existing callers/tests are unaffected.
         """
         super().__init__()
         self.alpha = alpha
         self.beta = beta
         self.smooth = smooth
         self.num_classes = num_classes
+        if class_weights is not None:
+            if len(class_weights) != num_classes:
+                raise ValueError(f"class_weights has {len(class_weights)} entries, expected {num_classes}")
+            self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
+        else:
+            self.class_weights = None
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         # logits: (B, C, H, W); target: (B, H, W) long class indices
@@ -34,7 +59,11 @@ class TverskyLoss(nn.Module):
         fn = ((1 - probs) * target_onehot).sum(dim=dims)
 
         tversky = (tp + self.smooth) / (tp + self.alpha * fp + self.beta * fn + self.smooth)
-        return 1.0 - tversky.mean()
+        per_class_loss = 1.0 - tversky
+        if self.class_weights is not None:
+            weights = self.class_weights.to(per_class_loss.device)
+            return (per_class_loss * weights).sum() / weights.sum()
+        return per_class_loss.mean()
 
 
 if __name__ == "__main__":
