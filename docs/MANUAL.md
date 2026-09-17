@@ -1837,6 +1837,59 @@ through and past v13's own epoch 19-20 before this gets called
 anything stronger than "a promising, measurably different trajectory
 so far."
 
+### 12.32 v13 epoch 19: the drop has started -- and a real dashboard lineage feature/bug found while checking it
+
+| epoch | flooded F1 | flooded coverage |
+|---|---|---|
+| 18 | 0.519 | 22/87 |
+| **19** | **0.006** | **5/87** |
+
+The drop v12 also showed right before its own epoch-19 collapse is
+visible here too -- coverage fell from 22 to 5, F1 from 0.519 to
+essentially zero. Not yet a full collapse (0.006 and 5/87 are not
+exactly 0/0 the way v10's and v12's actual collapse epochs were), but
+this is very likely the start of the same event, one epoch later than
+v12's. Continuing to watch epoch 20+ to see whether it fully bottoms
+out or, unlike every prior run, recovers.
+
+**Separately, while checking this live on the dashboard**: the user
+asked for the "Latest run" F1 trend chart to show full history --
+correctly identified a real gap. Every `--resume` (v11, v12, v13...)
+had been creating a NEW, disconnected `training_runs` row whose own
+`epoch_logs` only start wherever it resumed from (v13's own rows: epoch
+17 on), so the chart looked like the current run had no history before
+that point, even though it's a real continuation of v10's training.
+
+Fixed properly, not just papered over: `training_runs` gained
+`parent_run_id`; `train.py` now records its own run_name in every
+checkpoint (`ckpt_payload["run_name"]`), and `db_logger.py`'s
+`DBLogger` accepts a `parent_run_name` (read back from the --resume'd
+checkpoint's own recorded name) and resolves it to a Postgres id.
+`/api/runs/{id}/epochs` walks the parent chain and merges every
+ancestor's epochs into one continuous series -- v13's chart now
+correctly shows v10 (epochs 1-12) -> v12 (13-16) -> v13 (17+) in one
+view. Since a resume chain can BRANCH (v11 and v12 both resumed from
+the same v10 checkpoint), this walks one run's own real ancestry, never
+a sibling's -- v13's chart never shows v11's separate epochs.
+
+**A real bug caught testing this live, not assumed correct**: v12 kept
+running for a few epochs after v13 resumed from its epoch-16
+checkpoint, so v12's OWN epoch_logs table has an epoch 20 -- a
+DIFFERENT, diverged training trajectory than what v13 eventually reaches
+at its own epoch 20. The first version of the merge overwrote by epoch
+NUMBER alone, so once v12's epoch-20 row existed, it got displayed as
+if it were v13's current state, even before v13's own training had
+actually reached epoch 20 (confirmed live: the dashboard showed "epoch
+20" with numbers that turned out to be v12's, while v13's own CSV log
+was still only at epoch 19). Fixed: once a descendant run has ANY
+epoch data, its epoch range fully supersedes its ancestor's from its
+own first epoch onward, even for epoch numbers the descendant hasn't
+logged YET -- a chart that stops at the run's real latest epoch is
+correct; one that borrows a diverged sibling/ancestor's future epoch
+is not. Existing v10-v13 rows backfilled with their real, known
+lineage (v11.parent=v10, v12.parent=v10, v13.parent=v12) since they
+predate this feature and can't record it retroactively on their own.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

@@ -15,6 +15,17 @@ CREATE TABLE IF NOT EXISTS training_runs (
     -- real result would be exactly the kind of false positive this
     -- project exists to catch. Default true (a normal, trustworthy run).
     metric_trustworthy BOOLEAN NOT NULL DEFAULT true,
+    -- The run this one --resume'd from, if any -- e.g. v13 resumed from
+    -- v12's checkpoint, so v13.parent_run_id = v12's id. NULL for a
+    -- from-scratch run. Lets the dashboard show a resumed run's FULL
+    -- lineage (epoch 1 through its own latest epoch), not just its own
+    -- epoch_logs rows, which only start wherever it resumed from --
+    -- otherwise "Latest run" looked like it had no history before that
+    -- point, even though it's a real continuation of earlier training.
+    -- A resume chain can branch (e.g. v11 and v12 both resumed from v10),
+    -- so this is a tree, not a line -- walking parent_run_id from any one
+    -- run gives THAT run's own real ancestry, not siblings' branches.
+    parent_run_id INTEGER REFERENCES training_runs(id),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

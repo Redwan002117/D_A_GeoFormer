@@ -134,23 +134,82 @@ def list_runs():
 
 @app.get("/api/runs/{run_id}/epochs")
 def run_epochs(run_id: int):
+    """A resumed run's OWN epoch_logs rows only start wherever it resumed
+    from (e.g. v13 resumed from v12's checkpoint at epoch 16, so v13's own
+    rows start at epoch 17) -- shown alone, that looked like the run had
+    no history before that point, even though it's a real continuation of
+    earlier training. Walks parent_run_id (set at DBLogger construction
+    from the --resume'd checkpoint's own recorded run_name, see
+    db/db_logger.py and train.py) back through this run's ancestry and
+    merges every ancestor's epochs into one continuous series.
+
+    A resume chain can BRANCH (v11 and v12 both resumed from v10's same
+    checkpoint) -- walking parent_run_id from one specific run_id only
+    ever visits that run's own real ancestors, never a sibling branch, so
+    v13's chart shows v10 -> v12 -> v13, never v11's separate epochs.
+
+    Where an ancestor and a descendant both logged the same epoch number
+    (possible right at a resume point), the DESCENDANT's row wins -- it's
+    the actual continuation; the ancestor's row for that epoch is what
+    got superseded by resuming.
+    """
     conn = get_conn()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            """
-            SELECT epoch, train_loss, val_loss,
-                   f1_background, f1_building, f1_road, f1_flooded,
-                   pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
-                   lr, epoch_seconds
-            FROM epoch_logs WHERE run_id = %s ORDER BY epoch
-            """,
-            (run_id,),
-        )
-        rows = cur.fetchall()
-        if not rows:
+        # Oldest-ancestor-first order, built by walking parent_run_id from
+        # run_id upward. Capped at 50 hops -- a real lineage chain is a
+        # handful of runs deep; a longer one signals a cycle (a data bug,
+        # not a real project history) and must not hang the request.
+        chain_ids = []
+        current_id = run_id
+        for _ in range(50):
+            chain_ids.append(current_id)
+            cur.execute("SELECT parent_run_id FROM training_runs WHERE id = %s", (current_id,))
+            row = cur.fetchone()
+            if not row or row["parent_run_id"] is None:
+                break
+            current_id = row["parent_run_id"]
+        chain_ids.reverse()  # oldest ancestor first, this run last
+
+        by_epoch: dict[int, dict] = {}
+        for rid in chain_ids:
+            cur.execute(
+                """
+                SELECT epoch, train_loss, val_loss,
+                       f1_background, f1_building, f1_road, f1_flooded,
+                       pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
+                       lr, epoch_seconds
+                FROM epoch_logs WHERE run_id = %s ORDER BY epoch
+                """,
+                (rid,),
+            )
+            this_run_rows = cur.fetchall()
+            if not this_run_rows:
+                continue
+            # BUG THIS FIXES: an ancestor run (e.g. v12) can have LATER
+            # epoch numbers than a still-training descendant (v13) has
+            # reached so far -- v12 kept running for a while after v13
+            # resumed from its epoch-16 checkpoint, so v12's own epoch 20
+            # exists even though v13 hasn't logged its own epoch 20 yet.
+            # Naively overwriting by epoch number left v12's DIVERGED
+            # epoch-20 data (a different training trajectory after the
+            # resume point) displayed as if it were v13's current state --
+            # confirmed live: the dashboard showed "epoch 20" with numbers
+            # that turned out to be v12's, while v13's own CSV log was
+            # still only at epoch 19. A descendant's epoch range must
+            # fully supersede its ancestor's from its own first epoch
+            # onward, even for epoch numbers the descendant hasn't logged
+            # YET -- showing nothing (a chart that stops at 19) is
+            # correct; showing a foreign branch's epoch 20 is not.
+            min_epoch = min(r["epoch"] for r in this_run_rows)
+            for e in [k for k in by_epoch if k >= min_epoch]:
+                del by_epoch[e]
+            for r in this_run_rows:
+                by_epoch[r["epoch"]] = dict(r)
+
+        if not by_epoch:
             raise HTTPException(404, f"No epoch data for run_id={run_id}")
-        return JSONResponse([dict(r) for r in rows])
+        return JSONResponse([by_epoch[e] for e in sorted(by_epoch)])
     finally:
         conn.close()
 

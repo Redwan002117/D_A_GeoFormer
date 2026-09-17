@@ -33,7 +33,8 @@ class DBLogger:
     """None-safe: construct it unconditionally, call .log_epoch() every
     epoch, and it silently no-ops if there's no DB configured or reachable."""
 
-    def __init__(self, run_name: str, model_type: str, data_source: str, config_dict: dict | None):
+    def __init__(self, run_name: str, model_type: str, data_source: str, config_dict: dict | None,
+                 parent_run_name: str | None = None):
         self.enabled = False
         self.run_id = None
         if psycopg2 is None:
@@ -45,17 +46,35 @@ class DBLogger:
         try:
             self.conn = psycopg2.connect(url, connect_timeout=5)
             cur = self.conn.cursor()
+            # parent_run_name (the run_name recorded in the --resume'd
+            # checkpoint, if any -- see train.py) is looked up to an id
+            # here rather than passed as one directly, since the caller
+            # only ever has the checkpoint's own recorded name, not
+            # Postgres ids. A name that isn't found (e.g. logged only to
+            # CSV, never to Postgres) leaves parent_run_id NULL -- the
+            # dashboard's lineage chain just starts from this run instead
+            # of erroring.
+            parent_run_id = None
+            if parent_run_name:
+                cur.execute("SELECT id FROM training_runs WHERE run_name = %s", (parent_run_name,))
+                row = cur.fetchone()
+                if row:
+                    parent_run_id = row[0]
+                else:
+                    print(f"[db_logger] parent run '{parent_run_name}' not found in Postgres -- "
+                          f"lineage chain will start from this run instead")
             cur.execute(
                 """
-                INSERT INTO training_runs (run_name, model_type, data_source, config_json)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO training_runs (run_name, model_type, data_source, config_json, parent_run_id)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (run_name) DO UPDATE SET
                     model_type = EXCLUDED.model_type,
                     data_source = EXCLUDED.data_source,
-                    config_json = EXCLUDED.config_json
+                    config_json = EXCLUDED.config_json,
+                    parent_run_id = COALESCE(training_runs.parent_run_id, EXCLUDED.parent_run_id)
                 RETURNING id
                 """,
-                (run_name, model_type, data_source, json.dumps(config_dict) if config_dict else None),
+                (run_name, model_type, data_source, json.dumps(config_dict) if config_dict else None, parent_run_id),
             )
             self.run_id = cur.fetchone()[0]
             self.conn.commit()

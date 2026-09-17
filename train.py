@@ -600,6 +600,10 @@ def main():
         model_type=args.model,
         data_source=args.data_dir if args.data_dir else "synthetic",
         config_dict=dataclasses.asdict(model.cfg) if args.model == "geoformer" else None,
+        # ckpt["run_name"] is the --resume'd checkpoint's OWN recorded
+        # run_name (see ckpt_payload below) -- None on a from-scratch run,
+        # or if resuming from a checkpoint that predates this field.
+        parent_run_name=ckpt.get("run_name") if args.resume else None,
     )
 
     for epoch in range(start_epoch, args.epochs):
@@ -709,6 +713,11 @@ def main():
             # only" regardless of what checkpoint was actually passed in).
             "data_source": args.data_dir if args.data_dir else "synthetic",
             "ema_state": ema_state, "ema_momentum": args.ema_momentum,
+            # This run's own log-csv name -- lets a FUTURE --resume from
+            # this checkpoint record accurate lineage (parent_run_id) in
+            # Postgres, so the dashboard can show a resumed run's full
+            # epoch history back through its ancestors, not just its own.
+            "run_name": Path(args.log_csv).name,
         }
         torch.save(ckpt_payload, ckpt_dir / "last.pt")
         score = checkpoint_score(args.checkpoint_metric, val_loss, f1_final)
