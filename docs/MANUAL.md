@@ -1890,6 +1890,60 @@ is not. Existing v10-v13 rows backfilled with their real, known
 lineage (v11.parent=v10, v12.parent=v10, v13.parent=v12) since they
 predate this feature and can't record it retroactively on their own.
 
+### 12.33 v13 epoch 20: collapsed -- and at nearly the SAME ABSOLUTE epoch as v12, despite EMA
+
+| epoch | flooded F1 | flooded coverage |
+|---|---|---|
+| 19 | 0.006 | 5/87 |
+| **20** | **0.000** | **0/87** |
+
+Confirmed, not just the beginning of a drop: v13 has collapsed.
+
+**The genuinely new, important observation is WHEN**: v13's checkpoint
+lineage is v10 (epochs 1-12) -> v12 (13-16, reinit) -> v13 (17-20, EMA
+added on top). v13's collapse landed at **absolute epoch 20** -- almost
+exactly the same absolute epoch where v12 ALSO collapsed (epoch 19),
+even though v13 had an entirely additional intervention (EMA) that v12
+never had. If EMA (or reinit, or the stronger flood-specific loss) were
+independently delaying the collapse by some fixed NUMBER OF EPOCHS from
+whenever each was applied, v13 should have collapsed later than v12,
+proportional to its own extra epochs of EMA-smoothed training. It
+didn't -- it collapsed at essentially the same point in the OVERALL
+training trajectory (total real epochs since v10's original start),
+regardless of which combination of interventions was active for the
+epochs leading up to it.
+
+**Why this matters more than any single run's result**: three
+substantively different interventions -- reinitialization alone (v12,
+S12.25-S12.28), reinitialization plus a much stronger flood-specific
+loss (v12 continued, same run), and all of that plus EMA weight
+smoothing (v13, S12.29-S12.33) -- have now all failed at nearly the
+same absolute epoch count on this same 801-tile dataset. That
+consistency is itself the finding: it's much more consistent with a
+fixed limit tied to this dataset/training-regime (how much real
+flooded-pixel signal 801 tiles' worth of oversampled epochs can
+actually sustain) than with any one of the three mechanisms being
+individually fixable by a smarter loss, a smarter head, or a smarter
+optimizer trick.
+
+**Where this leaves the project, stated plainly**: the separate-head
+architecture (S12.14 item 1) is a real, validated, positive
+contribution -- building and road reliably stop collapsing together
+with flooded, confirmed across v10/v11/v12/v13, four independent runs.
+Flooded's own residual instability has now resisted four different,
+individually well-motivated interventions (separate head, loss
+reweighting, reinitialization, EMA), converging on nearly the same
+failure point each time. `docs/EXTERNAL_DATA_PLAN.md`'s trigger
+condition -- try the architecture-level and training-level fixes first,
+then treat data volume as the remaining explanation -- is met with more
+evidence behind it now than when S12.28 first said so. The honest
+recommendation is to treat this as this project's real, documented
+finding rather than keep cycling through further loss/architecture
+variants: report it as a genuine, characterized limitation (with the
+full diagnostic chain S12.17-S12.33 as evidence of how thoroughly it
+was investigated), and treat more/different flooded-labeled training
+data as the next real lever, not another same-day training-loop tweak.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
