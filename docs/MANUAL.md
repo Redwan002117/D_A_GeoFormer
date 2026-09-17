@@ -1482,6 +1482,53 @@ ratio, e.g. 1:20, is untried), (3) genuinely more flooded-labeled data
 since the architecture-level fix has been tried and flooded's collapse
 persists in a form not explained by cross-class competition).
 
+### 12.24 v11: flood-specific loss reweighting does NOT recover an already-collapsed head
+
+Implemented S12.23 items 1-2 together: `--flood-class-weight` and
+`--flood-tversky-beta` let the flood loss use its own independently-tuned
+class weight/beta instead of inheriting the structure loss's values.
+v11 resumed from v10's epoch-12 checkpoint (building F1=0.599, road
+F1=0.402, flooded collapsed to 0.000 for the prior 5 epochs) with
+`--flood-class-weight 20 --flood-tversky-beta 0.9` -- 5x the inherited
+flood weight (was 4.0) and a higher false-negative penalty (was 0.7).
+
+| epoch | building F1 | road F1 | flooded F1 |
+|---|---|---|---|
+| 12 (v10, before the new weighting) | 0.599 | 0.402 | 0.000 |
+| 13 | 0.578 | 0.425 | 0.000 |
+| 14 | 0.571 | 0.411 | 0.000 |
+| 15 | 0.570 | 0.419 | 0.000 |
+| 16 | 0.591 | **0.443** | **0.000** |
+
+**Real, honest negative result**: 4 full epochs with a 5x stronger,
+independently-tuned flood loss -- flooded stayed at exactly 0.000
+throughout. Loss reweighting alone does not recover a flood head that
+has already fully collapsed. Building/road stayed healthy and
+undisrupted by the resume (confirming the resume mechanics themselves
+weren't the problem) and road even reached a new project-best (0.443).
+
+**Working explanation, not yet independently verified**: once a binary
+classification head's logit has converged to a confidently negative
+value (always predicting "not flooded"), the local gradient of a
+softmax/sigmoid-based loss near that saturation point is close to zero
+-- multiplying a near-zero gradient by a larger loss weight still
+produces a near-zero gradient. A stronger loss can't out-argue an
+already-saturated activation; it would need to have been applied
+BEFORE the head saturated, not after (v10's own first several epochs,
+before the epoch-8 collapse, showed flooded actively learning under
+the weaker default weighting -- the head was never stuck in a poor
+region while gradients were still flowing).
+
+**Implication for the next real experiment**: rather than resuming
+training with a stronger loss, the more promising next test is
+reinitializing ONLY the flood head's own weights (fresh random init,
+keeping the trunk/structure head/backbone's already-learned features
+intact) before resuming with the stronger flood-specific weighting from
+S12.24 -- giving the flood head a non-saturated starting point instead
+of asking loss reweighting to reverse a state it can no longer see a
+gradient out of. Not yet implemented or tested; this is a documented,
+reasoned next step, not a claimed result.
+
 Four real bottlenecks were hit while building this, in this environment
 (Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
 one below is what was actually observed, not a generic list.
