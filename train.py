@@ -178,6 +178,10 @@ def main():
     p.add_argument("--synthetic-train-size", type=int, default=64)
     p.add_argument("--synthetic-val-size", type=int, default=16)
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    p.add_argument("--checkpoint-every", type=int, default=10,
+                    help="Save a non-overwritten epoch_N.pt snapshot every N epochs, independent "
+                         "of last.pt/best.pt -- a safety net so one bad epoch (e.g. a regression "
+                         "right after --resume) can't erase the only recoverable checkpoint.")
     p.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from")
     p.add_argument("--log-csv", type=str, default="training_log.csv")
     p.add_argument("--seed", type=int, default=0)
@@ -245,7 +249,29 @@ def main():
         for group in optimizer.param_groups:
             group["lr"] = args.lr
         start_epoch = ckpt["epoch"] + 1
-        best_val_loss = ckpt.get("best_val_loss", best_val_loss)
+        # BUG THIS FIXES: best_val_loss used to be carried forward from the
+        # checkpoint unconditionally. This project's real checkpoint chain
+        # was, at some point, resumed from a SYNTHETIC-data checkpoint
+        # (val_loss ~0.006 -- an easier task on a completely different loss
+        # scale) and that best_val_loss kept propagating forward through
+        # every subsequent real-data --resume's ckpt_payload forever, because
+        # real val_loss (~0.4) can never beat it. The practical effect: on
+        # this exact project, checkpoints/best.pt silently stopped updating
+        # after the very first real-data run and stayed frozen at a stale
+        # epoch-36 synthetic checkpoint for the rest of the project's
+        # history -- discovered only when an oversampling run regressed
+        # (val_loss 0.42 -> 0.45) and best.pt turned out to hold no
+        # real-data safety net at all. Only trust a resumed best_val_loss
+        # when it came from a checkpoint trained on the SAME data_source;
+        # otherwise this is a regime change and "best" starts over.
+        ckpt_data_source = ckpt.get("data_source")
+        current_data_source = args.data_dir if args.data_dir else "synthetic"
+        if ckpt_data_source == current_data_source:
+            best_val_loss = ckpt.get("best_val_loss", best_val_loss)
+        else:
+            print(f"Resumed checkpoint's data_source ('{ckpt_data_source}') differs from this run's "
+                  f"('{current_data_source}') -- treating this as a new regime, best_val_loss restarts at inf "
+                  f"instead of inheriting a value that isn't comparable.")
         print(f"Resumed from {args.resume} at epoch {start_epoch}, lr reset to {args.lr:.2e}")
 
     # T_max is the REMAINING epoch count, not args.epochs -- a fresh
@@ -371,6 +397,22 @@ def main():
             best_val_loss = val_loss
             torch.save(ckpt_payload, ckpt_dir / "best.pt")
             print(f"  -> new best (val_loss={val_loss:.4f}), saved {ckpt_dir / 'best.pt'}")
+        # BUG THIS FIXES: last.pt is overwritten every single epoch and
+        # best.pt only updates when val_loss improves -- so a run that goes
+        # through one genuinely bad epoch (a bad --resume lr, an aggressive
+        # sampler change, anything that spikes val_loss) leaves NO way back
+        # to the good epoch right before it: last.pt is already overwritten,
+        # and best.pt won't hold it either unless that specific epoch
+        # happened to be the single best of the whole run. This is exactly
+        # what destroyed this project's own epoch-104 checkpoint (see
+        # docs/MANUAL.md S12.6) -- an --oversample-rare-classes resume
+        # regressed val_loss on its very first epoch and there was no
+        # milestone snapshot to fall back to. A non-overwritten snapshot
+        # every --checkpoint-every epochs costs disk space, not correctness.
+        if (epoch + 1) % args.checkpoint_every == 0:
+            milestone_path = ckpt_dir / f"epoch_{epoch + 1}.pt"
+            torch.save(ckpt_payload, milestone_path)
+            print(f"  -> milestone snapshot saved {milestone_path}")
 
     print(f"\n{args.log_csv} is up to date (written every epoch). Best val_loss: {best_val_loss:.4f}. "
           f"Checkpoints in {ckpt_dir}/ (best.pt, last.pt).")

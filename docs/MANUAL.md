@@ -594,15 +594,79 @@ wires this into a `torch.utils.data.WeightedRandomSampler` over the TRAIN
 split only -- validation keeps sampling the true, unweighted real
 distribution, so held-out F1 stays comparable to every number above.
 
-A resumed run from the epoch-104 checkpoint with `--oversample-rare-classes
---epochs 200` is in progress; results will be appended here once it's run
-long enough to say something real, not projected in advance. The Colab
-notebook's two main training cells were also fixed (a genuine, separate
-bug: their multi-line `!python` commands had a corrupted line-continuation
--- literal `\n` text instead of an actual line break, left over from an
-earlier notebook edit -- that would have broken both cells the moment
-anyone ran them) and updated to use the same flag with `--epochs 200`, so
-a GPU run gets the same boost at real scale.
+The Colab notebook's two main training cells were also fixed (a genuine,
+separate bug: their multi-line `!python` commands had a corrupted
+line-continuation -- literal `\n` text instead of an actual line break,
+left over from an earlier notebook edit -- that would have broken both
+cells the moment anyone ran them) and updated to use the same flag, so a
+GPU run gets the same boost at real scale.
+
+### 12.7 The oversampling resume regressed, and it destroyed the epoch-104 checkpoint -- a real incident, not a projection
+
+The resumed run mentioned above (epoch 104 + `--oversample-rare-classes
+--epochs 200`, boost 4x/6x as first written) did not go well:
+
+| epoch | val_loss | road F1 | building/flooded F1 |
+|---|---|---|---|
+| 104 (resume point) | 0.4157 | 0.237 | 0.000 / 0.000 |
+| 105 | 0.4496 | **0.000** | 0.000 / 0.000 |
+| 106 | 0.4495 | **0.000** | 0.000 / 0.000 |
+
+`road` F1 -- the one class this project had real, if modest, learning
+on -- collapsed to exactly 0.000 on the very first oversampled epoch and
+stayed there, with `val_loss` going up and then flatlining almost
+exactly (0.44955 -> 0.44955), not down. This is a real regression, not
+noise: two consecutive epochs pointing the same direction with a frozen
+loss is the signature of the model settling into a degenerate
+background-only local optimum, not a one-epoch blip. The run was stopped
+after epoch 106 rather than left to keep degrading.
+
+**The bigger problem it exposed**: recovering from this should have meant
+"go back to the epoch-104 checkpoint and try a gentler configuration." It
+couldn't -- `checkpoints/last.pt` is overwritten every single epoch
+unconditionally, so it already held the collapsed epoch-106 weights, and
+`checkpoints/best.pt` turned out to still be an epoch-36 **synthetic**-only
+checkpoint from early in this project (`val_loss` 0.0064, a completely
+different loss regime, `data_source: None` -- it predates several fields
+this project added since). It had never been touched by any real-data
+run because `best_val_loss` was carried forward, unconditionally, from
+every `--resume` -- including, at some point far earlier, from that
+synthetic checkpoint -- and real-data `val_loss` (~0.40-0.45) can never
+beat a synthetic-task `val_loss` of 0.0064. **Epoch 104's actual trained
+weights -- this project's best real-data GeoFormer checkpoint -- are
+unrecoverable.** They were overwritten with no snapshot anywhere holding
+them.
+
+Two real fixes landed in `train.py` because of this, not just one lowered
+number:
+
+1. **`best_val_loss` no longer carries forward across a data_source
+   change on `--resume`.** If the resumed checkpoint's `data_source`
+   doesn't match the current run's, `best_val_loss` restarts at infinity
+   instead of inheriting an incomparable value -- this is what let
+   `best.pt` silently stop updating for this project's entire real-data
+   history.
+2. **`--checkpoint-every N` (default 10)** now saves a non-overwritten
+   `epoch_N.pt` snapshot independent of `last.pt`/`best.pt`, so one bad
+   epoch can never again be the difference between "recoverable" and
+   "gone."
+
+The oversampling boost defaults were also lowered (`class_presence_weights`:
+4.0/6.0 -> 2.0/3.0, so the combined multiplier for a tile with both rare
+classes drops from 24x to 6x) on the reasoning that the combined 24x
+weight at `--batch-size 1` was plausibly too sharp a distribution shift
+for the optimizer to survive without catastrophic forgetting -- stated as
+reasoning, not yet as a proven fix, since it hasn't been tested against a
+real collapse yet either.
+
+**Training was restarted from epoch 0** (`training_log_geoformer_801_v2.csv`,
+the old log preserved as `training_log_geoformer_801_epoch1-106_lost.csv`
+rather than deleted) with the gentler oversampling boost active from the
+very first epoch and milestone snapshots on. Starting fresh from epoch 0
+with oversampling already active is a deliberately different situation
+from a resume: there's no already-converged optimum to catastrophically
+forget out of. Results will be appended here as real epochs land, with
+the coverage-collapse check applied the same way every prior section did.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 

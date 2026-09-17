@@ -111,7 +111,7 @@ def test_class_presence_weights_only_covers_requested_indices(tmp_path):
     ds = _make_fake_index(tmp_path, ["tile_0", "tile_1"], class_pixel_counts=counts)
     weights = ds.class_presence_weights([1])  # only tile_1, a building tile
     assert len(weights) == 1
-    assert weights[0] == 4.0  # default boost_building
+    assert weights[0] == 2.0  # default boost_building
 
 
 if __name__ == "__main__":

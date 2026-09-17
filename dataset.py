@@ -192,7 +192,7 @@ class SpaceNet8Dataset(Dataset):
         return train_indices, val_indices
 
     def class_presence_weights(self, indices: list[int],
-                                boost_building: float = 4.0, boost_flooded: float = 6.0) -> list[float]:
+                                boost_building: float = 2.0, boost_flooded: float = 3.0) -> list[float]:
         """Per-index sampling weight for a WeightedRandomSampler: tiles that
         contain building and/or flooded pixels get boosted, so those tiles
         appear more often per epoch than their raw prevalence in `indices`.
@@ -210,6 +210,19 @@ class SpaceNet8Dataset(Dataset):
         `indices` should be a TRAIN split's indices only (e.g. from
         `.split()[0]`) -- val must keep sampling its true, unweighted
         real-world distribution so evaluation numbers stay honest.
+
+        DEFAULTS REDUCED from an earlier 4.0/6.0 (up to 24x combined) after
+        a real regression: resuming a 104-epoch real-data checkpoint with
+        those boosts and batch_size=1 collapsed `road` F1 from 0.237 to
+        0.000 within a single epoch and it stayed at 0.000 the epoch after,
+        with val_loss going UP, not down (see docs/MANUAL.md S12.6). The
+        combined 24x weight on tiles with both classes, at batch size 1,
+        meant the model saw an extreme, narrow slice of the data
+        distribution repeatedly -- plausibly enough to catastrophically
+        overwrite what it had already learned about `road`. 2.0/3.0 (6x
+        combined) is a real but much gentler nudge; this needs its own
+        honest before/after comparison, not just a lower number assumed
+        safe.
         """
         weights = []
         for i in indices:
