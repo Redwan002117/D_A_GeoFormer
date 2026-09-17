@@ -816,6 +816,62 @@ The epoch-10 checkpoint is safely preserved as `checkpoints/epoch_10.pt`
 (the `--checkpoint-every` fix from S12.7), independent of whatever
 `last.pt` looks like by the time anyone reads this.
 
+v4 was stopped at epoch 12 (`road` F1 0.211 -> 0.229 -> 0.249, still
+climbing; `building`/`flooded` still exactly 0.000) once the decision was
+made to move to the pretrained-backbone fix below rather than keep tuning
+this run's hyperparameters further -- not because it broke.
+
+### 12.11 Phase 2, for real: an ImageNet-pretrained backbone
+
+Given a choice between another round of hyperparameter tuning on the
+from-scratch encoder and the architectural fix the actual SpaceNet-8
+winners used, the pretrained-backbone half of that fix was built --
+self-contained, no dataset reprocessing needed (unlike a separate flood
+head, which needs the original per-tile GeoJSON re-rasterized to keep
+building/road identity alongside a flooded attribute -- out of scope for
+this pass, named honestly, not silently dropped).
+
+`GeoFormerConfig.pretrained_backbone` (default `None`, exact prior
+behavior) takes any `timm` model name supporting `features_only=True` at
+strides 4/8/16/32 -- e.g. `"efficientnet_b0"`, confirmed to work in this
+CPU environment (not `timm/MaxViT-Base` itself: a ~120M-parameter
+network this environment can't run at real scale, per S1's own scope
+note; EfficientNet-B0 is the CPU-tractable pretrained option available
+here, at 5.3M of its own parameters). `SiameseMaxViTEncoder` runs the
+backbone once per timestamp, projects each of its 4 stages onto
+`cfg.stage_dims` via a 1x1 conv, and feeds the SAME `MaxViTBlock`
+attention stages (block + grid) used by the from-scratch path -- the
+thesis's actual proposed attention mechanism and Phase 4's
+grid-saliency-based bridging are unchanged either way. `train.py
+--pretrained-backbone efficientnet_b0` wires it in.
+
+Verified, not just wired: a full forward pass at production resolution
+(256x256, default `stage_dims`) with REAL downloaded ImageNet-1k weights
+produces correctly-shaped logits (13.16M total parameters, vs 10.9M for
+the from-scratch default), and a checkpoint saved with
+`pretrained_backbone` set round-trips correctly through
+`checkpoint_utils.load_checkpoint_model` (config reconstruction, state
+dict load, a second forward pass on the reloaded model). Two new
+regression tests use `pretrained=False` (random init, no network call)
+to exercise the wiring itself -- channel projection, stage count, output
+shape -- fast and deterministically, separate from the one-time manual
+verification that real pretrained weights actually download and load.
+
+One real, disclosed tradeoff: reloading ANY checkpoint saved with
+`pretrained_backbone` set re-runs `timm.create_model(..., pretrained=True)`
+first (downloading/loading real ImageNet weights, cached after the first
+time) even though `load_checkpoint_model`'s subsequent `load_state_dict`
+immediately overwrites them with the checkpoint's own trained weights --
+so `evaluate.py`/`demo.py`/`serve.py`/`dashboard/process_samples.py` all
+now need network access (or a warm `timm` cache) and `timm` installed the
+first time they load such a checkpoint. Not fixed here -- the wasted
+download is a one-time, cached cost, not a correctness problem -- but
+named so it isn't a surprise.
+
+**Training restarted a fifth time** with this backbone
+(`training_log_geoformer_801_v5.csv`, v1-v4 logs all preserved) --
+results appended here as real epochs land.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

@@ -207,6 +207,13 @@ def main():
                          "more often per epoch than their raw prevalence. Targets the "
                          "building/flooded total-collapse finding in docs/MANUAL.md S12.3-S13 "
                          "-- val stays unweighted so evaluation numbers stay honest.")
+    p.add_argument("--pretrained-backbone", type=str, default=None,
+                    help="geoformer only: an ImageNet-pretrained timm model name (e.g. "
+                         "'efficientnet_b0') supporting features_only=True at strides "
+                         "4/8/16/32, used as the encoder's feature source instead of the "
+                         "from-scratch stem -- Phase 2 of the thesis, see docs/MANUAL.md "
+                         "S12.10-S12.11. Requires `pip install timm` and a first-run internet "
+                         "download of the pretrained weights.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -221,10 +228,14 @@ def main():
         model = SN8Baseline(num_classes=NUM_CLASSES).to(device)
     else:
         model = DualAxisGeoFormer(
-            GeoFormerConfig(num_classes=NUM_CLASSES, use_grid_attention=not args.no_grid_attention)
+            GeoFormerConfig(num_classes=NUM_CLASSES, use_grid_attention=not args.no_grid_attention,
+                             pretrained_backbone=args.pretrained_backbone)
         ).to(device)
         if args.no_grid_attention:
             print("Ablation: grid attention DISABLED (block attention only)")
+        if args.pretrained_backbone:
+            print(f"Encoder: ImageNet-pretrained '{args.pretrained_backbone}' backbone "
+                  f"(Phase 2) feeding the existing MaxViTBlock attention stages")
     print(f"Model: {args.model}  parameters: {model.num_parameters():,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)

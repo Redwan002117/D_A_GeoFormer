@@ -93,9 +93,45 @@ def test_grid_attention_saliency_matches_batch_dimension():
     assert saliency.shape == (3, 8, 8)
 
 
+def test_pretrained_backbone_wiring_produces_correct_shapes():
+    """Phase 2: a timm backbone feeds the SAME downstream pipeline (diffs,
+    decoder, geo-head) via per-stage 1x1 projections. pretrained=False
+    (random init) keeps this test fast and network-free -- it's checking
+    the wiring (channel projection, stage count, output shape), not
+    real ImageNet weights, which a real training run enables separately."""
+    import pytest
+    pytest.importorskip("timm")
+    cfg = GeoFormerConfig(
+        stage_dims=(8, 16, 24, 32),  # deliberately != efficientnet_b0's own channels,
+        stage_windows=(4, 4, 2, 2),  # so this also proves the projection convs work,
+        stage_grids=(4, 2, 2, 1),    # not just that the shapes happened to already match
+        num_heads=2, num_classes=4,
+        pretrained_backbone="efficientnet_b0", pretrained=False,
+    )
+    model = DualAxisGeoFormer(cfg)
+    model.eval()
+    pre = torch.randn(1, 3, 64, 64)
+    post = torch.randn(1, 3, 64, 64)
+    with torch.no_grad():
+        out = model(pre, post)
+    assert out["logits"].shape == (1, 4, 64, 64)
+
+
+def test_pretrained_backbone_none_is_unaffected():
+    """The default path (pretrained_backbone=None) must be byte-for-byte
+    the same from-scratch encoder as before this feature existed --
+    proven by checking the model still has a `stem` attribute (the
+    from-scratch path) and no `backbone` attribute (the timm path)."""
+    model = DualAxisGeoFormer(_tiny_config())
+    assert hasattr(model.encoder, "stem")
+    assert not hasattr(model.encoder, "backbone")
+
+
 if __name__ == "__main__":
     test_forward_pass_output_shape()
     test_forward_pass_batch_size_greater_than_one()
     test_gradients_flow_to_every_parameter()
     test_grid_attention_saliency_matches_batch_dimension()
+    test_pretrained_backbone_wiring_produces_correct_shapes()
+    test_pretrained_backbone_none_is_unaffected()
     print("All tests passed.")

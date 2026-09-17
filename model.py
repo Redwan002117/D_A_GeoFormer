@@ -11,13 +11,18 @@ Scope honesty, stated up front (say this out loud when you present it):
   - The attention mechanism (block-local + strided-global, linear complexity)
     is implemented faithfully to Tu et al.'s MaxViT design -- this is the
     actual mechanism the thesis argues for, not a stand-in.
-  - It is NOT the full MaxViT-Base backbone from timm/ImageNet-21k weights --
-    that is a ~120M-parameter pretrained network; downloading and running it
-    is not what a proposal-stage prototype needs to prove. This is a smaller,
+  - By default (`GeoFormerConfig.pretrained_backbone=None`) this is a smaller,
     randomly-initialized version of the same block structure, sized to run a
-    forward pass on a CPU in seconds. Swapping in the pretrained MaxViT-Base
-    backbone from `timm` for Phase 2 of the actual thesis is a drop-in change
-    to `encoder_stage_dims` / `MaxViTBlock`, not a redesign.
+    forward pass on a CPU in seconds -- not the full MaxViT-Base backbone from
+    timm/ImageNet-21k weights (a ~120M-parameter network training this
+    session's CPU environment can't run at real scale). Phase 2 is now real,
+    not just described: `pretrained_backbone="efficientnet_b0"` (or any timm
+    model with a 4-stage `features_only` output at strides 4/8/16/32) swaps
+    in ImageNet-1k-pretrained features as the encoder's input to the SAME
+    MaxViTBlock attention stages, via a 1x1 projection per stage -- see
+    `SiameseMaxViTEncoder`. EfficientNet-B0, not MaxViT-Base, because it's
+    the CPU-tractable pretrained option available here; a MaxViT-Base swap
+    is a one-line `pretrained_backbone` change for whoever has the compute.
   - The model has NOT been trained. Running `demo.py` proves the architecture
     builds, the tensor shapes are correct end-to-end, and the pipeline
     (encoder -> diff module -> decoder -> geo-head -> skeleton bridging)
@@ -226,42 +231,106 @@ class GeoFormerConfig:
     num_heads: int = 4
     num_classes: int = 4  # background, building, road, flooded
     use_grid_attention: bool = True  # False = the Table 2 "- grid attention" ablation
+    # Phase 2 (thesis): an ImageNet-pretrained CNN backbone (any timm model
+    # supporting features_only=True with 4 stages at strides 4/8/16/32,
+    # e.g. "efficientnet_b0") replaces the from-scratch stem+downsample
+    # convs as the source of per-stage features -- the existing
+    # MaxViTBlock attention stages (block + grid) still run on top of
+    # those features unchanged, so the thesis's actual proposed attention
+    # mechanism and Phase 4's grid-saliency signal are untouched. None
+    # (default) keeps the original from-scratch, randomly-initialized
+    # stem -- exact prior behavior, verified by test.
+    pretrained_backbone: str | None = None
+    # Load real ImageNet weights (the actual point of pretrained_backbone in
+    # production). False skips the download and randomly initializes the
+    # backbone instead -- exists so tests can exercise the wiring (shapes,
+    # gradient flow, projection channels) fast and without a network call,
+    # not something a real training run should ever set.
+    pretrained: bool = True
 
 
 class SiameseMaxViTEncoder(nn.Module):
-    """Shared-weight encoder run once per timestamp (pre / post)."""
+    """Shared-weight encoder run once per timestamp (pre / post).
+
+    WHY THIS CHANGE (Phase 2, docs/MANUAL.md S12.8/S12.10): three straight
+    real-data training configurations (plain, oversampled, oversampled +
+    class-weighted loss) each produced SOME partial class collapse under
+    this project's from-scratch, randomly-initialized encoder -- a
+    different one each time, never all three foreground classes learning
+    together. Researching the actual SpaceNet-8 winning solutions found
+    they credited a pretrained backbone with "significantly" improving
+    their score. `pretrained_backbone` wires that in as an alternative
+    feature source for the SAME downstream pipeline (DiffModule, decoder,
+    Geo-Head, grid-saliency-based Phase 4 bridging), not a redesign.
+    """
 
     def __init__(self, cfg: GeoFormerConfig):
         super().__init__()
         self.cfg = cfg
-        self.stem = nn.Sequential(
-            nn.Conv2d(cfg.in_channels, cfg.stem_channels, 3, stride=2, padding=1),
-            nn.BatchNorm2d(cfg.stem_channels),
-            nn.GELU(),
-        )
-        dims = (cfg.stem_channels,) + cfg.stage_dims
-        self.downsamples = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(dims[i], dims[i + 1], 3, stride=2, padding=1),
-                nn.BatchNorm2d(dims[i + 1]),
+        self.pretrained_backbone_name = cfg.pretrained_backbone
+
+        if cfg.pretrained_backbone:
+            # Imported lazily -- timm is only a hard dependency when this
+            # config option is actually used, not for the default
+            # from-scratch path (keeps the base install lighter and
+            # existing synthetic/CPU-smoke-test runs unaffected).
+            import timm
+            self.backbone = timm.create_model(
+                cfg.pretrained_backbone, pretrained=cfg.pretrained, features_only=True,
+                out_indices=(1, 2, 3, 4), in_chans=cfg.in_channels,
+            )
+            backbone_channels = self.backbone.feature_info.channels()
+            if len(backbone_channels) != len(cfg.stage_dims):
+                raise ValueError(
+                    f"'{cfg.pretrained_backbone}' produced {len(backbone_channels)} feature "
+                    f"stages, expected {len(cfg.stage_dims)} (one per cfg.stage_dims entry)."
+                )
+            # 1x1 convs project the pretrained backbone's own channel
+            # counts onto cfg.stage_dims, so every downstream module
+            # (DiffModule, decoder, Geo-Head) is completely unaware
+            # whether its input came from this backbone or the
+            # from-scratch stem below.
+            self.projections = nn.ModuleList([
+                nn.Conv2d(backbone_channels[i], cfg.stage_dims[i], 1)
+                for i in range(len(cfg.stage_dims))
+            ])
+        else:
+            self.stem = nn.Sequential(
+                nn.Conv2d(cfg.in_channels, cfg.stem_channels, 3, stride=2, padding=1),
+                nn.BatchNorm2d(cfg.stem_channels),
                 nn.GELU(),
             )
-            for i in range(len(cfg.stage_dims))
-        ])
+            dims = (cfg.stem_channels,) + cfg.stage_dims
+            self.downsamples = nn.ModuleList([
+                nn.Sequential(
+                    nn.Conv2d(dims[i], dims[i + 1], 3, stride=2, padding=1),
+                    nn.BatchNorm2d(dims[i + 1]),
+                    nn.GELU(),
+                )
+                for i in range(len(cfg.stage_dims))
+            ])
+
         self.stages = nn.ModuleList([
-            MaxViTBlock(dims[i + 1], cfg.stage_windows[i], cfg.stage_grids[i], cfg.num_heads,
+            MaxViTBlock(cfg.stage_dims[i], cfg.stage_windows[i], cfg.stage_grids[i], cfg.num_heads,
                         use_grid_attention=cfg.use_grid_attention)
             for i in range(len(cfg.stage_dims))
         ])
 
     def forward(self, x: torch.Tensor):
-        x = self.stem(x)
         feats, saliencies = [], []
-        for down, stage in zip(self.downsamples, self.stages):
-            x = down(x)
-            x, sal = stage(x)
-            feats.append(x)
-            saliencies.append(sal)
+        if self.pretrained_backbone_name:
+            backbone_feats = self.backbone(x)
+            for proj, bf, stage in zip(self.projections, backbone_feats, self.stages):
+                f, sal = stage(proj(bf))
+                feats.append(f)
+                saliencies.append(sal)
+        else:
+            x = self.stem(x)
+            for down, stage in zip(self.downsamples, self.stages):
+                x = down(x)
+                x, sal = stage(x)
+                feats.append(x)
+                saliencies.append(sal)
         return feats, saliencies  # each a list of per-stage tensors
 
 

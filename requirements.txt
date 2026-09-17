@@ -9,3 +9,4 @@ uvicorn[standard]
 python-multipart
 pytest
 psycopg2-binary
+timm
