@@ -98,4 +98,18 @@ class DBLogger:
             )
             self.conn.commit()
         except Exception as e:  # noqa: BLE001
+            # BUG THIS FIXES: a failed query leaves the connection's
+            # transaction in an ABORTED state until an explicit ROLLBACK --
+            # Postgres refuses every subsequent command on that connection
+            # ("current transaction is aborted") until then. Without this,
+            # a single transient failure (a network blip, Neon's compute
+            # briefly suspended/waking) would silently break DB logging for
+            # every remaining epoch of the run, not just the one that hit
+            # the blip -- confirmed by reproducing it directly against the
+            # live DB: one failed query, then a plain `SELECT 1` on the
+            # same connection also failed with InFailedSqlTransaction.
+            try:
+                self.conn.rollback()
+            except Exception:  # noqa: BLE001 - the connection may be fully dead; give up quietly
+                pass
             print(f"[db_logger] epoch {row.get('epoch')} write failed, continuing without it: {e}")

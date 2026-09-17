@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -51,6 +52,27 @@ def _database_url() -> str:
 
 def get_conn():
     return psycopg2.connect(_database_url())
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    """Strip an uploaded file's name down to a safe basename before it ever
+    touches a filesystem path.
+
+    BUG THIS FIXES (real, exploitable): submit_sample() used to build
+    `SAMPLES_DIR / f"{uuid}_pre_{pre.filename}"` directly from the
+    client-supplied multipart filename with no sanitization. pathlib's `/`
+    operator treats any "/" or "\\" in that string as real path separators,
+    so a crafted filename like "../../../../evil.txt" resolves OUTSIDE
+    SAMPLES_DIR entirely (confirmed: it lands in the project root, one
+    level up from where uploads are supposed to live) -- a path-traversal
+    arbitrary-file-write via the public upload form. Keep only the
+    basename (Path(...).name already discards any directory components,
+    "..” included) and further restrict it to a safe character set so no
+    other path-meaningful character can sneak through either.
+    """
+    name = Path(filename or "upload").name  # discards any directory components, "." and ".." included
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    return name or "upload"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -133,8 +155,8 @@ def dataset_stats():
 @app.post("/api/samples")
 async def submit_sample(pre: UploadFile = File(...), post: UploadFile = File(...)):
     sample_uuid = uuid.uuid4().hex[:12]
-    pre_path = SAMPLES_DIR / f"{sample_uuid}_pre_{pre.filename}"
-    post_path = SAMPLES_DIR / f"{sample_uuid}_post_{post.filename}"
+    pre_path = SAMPLES_DIR / f"{sample_uuid}_pre_{_safe_upload_filename(pre.filename)}"
+    post_path = SAMPLES_DIR / f"{sample_uuid}_post_{_safe_upload_filename(post.filename)}"
     with pre_path.open("wb") as f:
         shutil.copyfileobj(pre.file, f)
     with post_path.open("wb") as f:
