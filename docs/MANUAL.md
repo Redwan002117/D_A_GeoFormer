@@ -1150,6 +1150,70 @@ to actually build it -- not now, since S12.14's architecture-level fix
 out first before concluding this is a data-volume problem rather than an
 architecture one.
 
+### 12.17 Debugging the collapse mechanism directly, not just its symptoms
+
+Every section above establishes *that* building/flooded collapse happens
+and *when*. This section is the first to actually look *inside* a
+collapsed checkpoint to find out *how*, with three short, targeted
+tests against v9's own live checkpoint (epoch 3, the collapsed one) --
+not guessed, measured.
+
+**Test 1 -- is it gradient instability?** Ran 60 real training steps
+(same sampler, same loss config, backbone frozen to match v9's own
+epoch 1-3 state) logging the per-step gradient norm before any optimizer
+update. Result: stable throughout, 0.04-0.29, no spikes, no correlation
+with which classes were present in that step's tile. **Ruled out**:
+gradient clipping would have nothing to clip here.
+
+**Test 2 -- is the model narrowly losing the argmax, or has it truly
+abandoned the class?** Loaded the actual collapsed checkpoint
+(`checkpoints/last.pt`, epoch 3) and evaluated its raw softmax
+probability at every real building-labeled pixel of a genuine
+building-containing held-out tile (2,476 real building pixels). Result:
+mean predicted `building` probability = **0.0000** (max across all
+2,476 pixels: 0.0001); mean `background` probability at those same
+pixels = 0.9699. This is not a close competition the model is
+narrowly losing -- it has confidently, near-totally eliminated
+`building` as a possibility everywhere, including on pixels it was
+literally shown are buildings.
+
+**Test 3 -- is this a dead output channel (shallow, cheaply fixable) or
+a deeper representational collapse?** Inspected the Geo-Head's final
+1x1 conv layer's actual weights per class, on the same checkpoint:
+
+| class | bias | weight norm |
+|---|---|---|
+| background | +0.611 | 2.569 |
+| building | -0.337 | 1.596 |
+| road | -0.202 | 1.326 |
+| flooded | -0.104 | 1.725 |
+
+`building`'s output weights are NOT degenerate -- a norm of 1.6 is
+substantial, not a dead/zeroed channel, and the bias gap to background
+(~0.95) is far too small on its own to explain a probability of
+0.0000 vs 0.97. The near-total collapse must therefore come from
+**upstream**: the shared 32-channel decoder features feeding into this
+layer no longer contain a discriminative signal for `building` that this
+weight vector can act on, at least not at the pixels that matter.
+Background's own output weight vector has the LARGEST norm of all four
+classes AND the most favorable bias -- consistent with the shared
+representation itself having been shaped disproportionately around
+recognizing background (present in effectively every pixel of every
+tile) at the expense of the rarer classes' own discriminative features.
+
+**What this rules out and what it strengthens, concretely**: not
+gradient instability (Test 1), not a shallow/cheaply-reinitializable
+output-layer problem (Test 3) -- both would have been quick wins if
+true, and neither is. What remains consistent with all three tests is
+the S12.10/S12.13 synthesis: a single joint softmax, with one dominant
+background-like class and several rare ones sharing the SAME upstream
+representation, lets the dominant class's training signal reshape that
+shared representation around itself. A separate, decoupled output head
+for the rare classes (S12.14 item 1) would give them their own gradient
+pathway into a representation that doesn't have to also serve
+background's overwhelming pixel-count advantage -- this debugging pass
+is real evidence FOR that fix, not just a restatement of the plan.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
