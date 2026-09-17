@@ -81,17 +81,26 @@ def migrate():
             print(f"skip (not found): {filename}")
             continue
 
+        # BUG THIS FIXES: /api/stats/best surfaced "building F1 0.999" from
+        # this exact migration's own pre-ConfusionAccumulator-era runs as
+        # the project's best real result -- a per-batch-averaging metric
+        # artifact, not real detection (MANUAL.md S12.3). Derive
+        # metric_trustworthy from the same "superseded" wording these
+        # notes already carry, so it's set correctly the moment a run is
+        # migrated, not patched in after the fact.
+        metric_trustworthy = "superseded" not in notes.lower() and "pre-confusionaccumulator" not in notes.lower()
         cur.execute(
             """
-            INSERT INTO training_runs (run_name, model_type, data_source, notes)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO training_runs (run_name, model_type, data_source, notes, metric_trustworthy)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (run_name) DO UPDATE SET
                 model_type = EXCLUDED.model_type,
                 data_source = EXCLUDED.data_source,
-                notes = EXCLUDED.notes
+                notes = EXCLUDED.notes,
+                metric_trustworthy = EXCLUDED.metric_trustworthy
             RETURNING id
             """,
-            (filename, model_type, data_source, notes),
+            (filename, model_type, data_source, notes, metric_trustworthy),
         )
         run_id = cur.fetchone()[0]
 

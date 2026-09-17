@@ -7,6 +7,14 @@ CREATE TABLE IF NOT EXISTS training_runs (
     data_source   TEXT,                       -- dataset dir or 'synthetic'
     config_json   JSONB,                      -- GeoFormerConfig, null for baseline
     notes         TEXT,
+    -- False for runs logged before ConfusionAccumulator (see MANUAL.md
+    -- S12.3): their F1 numbers are per-batch-averaged and can read as
+    -- deceptively high on rare classes even when the model never predicts
+    -- them anywhere. The dashboard's "best F1 ever" stats must exclude
+    -- these -- surfacing a metric-averaging artifact as the project's best
+    -- real result would be exactly the kind of false positive this
+    -- project exists to catch. Default true (a normal, trustworthy run).
+    metric_trustworthy BOOLEAN NOT NULL DEFAULT true,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

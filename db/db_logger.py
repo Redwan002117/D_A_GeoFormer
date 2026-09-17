@@ -65,55 +65,68 @@ class DBLogger:
             print(f"[db_logger] could not connect to Neon Postgres, continuing without it: {e}")
             self.enabled = False
 
+    def _write_epoch(self, row: dict) -> None:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO epoch_logs (
+                run_id, epoch, train_loss, val_loss,
+                f1_background, f1_building, f1_road, f1_flooded,
+                pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
+                lr, epoch_seconds
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (run_id, epoch) DO UPDATE SET
+                train_loss = EXCLUDED.train_loss,
+                val_loss = EXCLUDED.val_loss,
+                f1_background = EXCLUDED.f1_background,
+                f1_building = EXCLUDED.f1_building,
+                f1_road = EXCLUDED.f1_road,
+                f1_flooded = EXCLUDED.f1_flooded,
+                pred_images_background = EXCLUDED.pred_images_background,
+                pred_images_building = EXCLUDED.pred_images_building,
+                pred_images_road = EXCLUDED.pred_images_road,
+                pred_images_flooded = EXCLUDED.pred_images_flooded,
+                lr = EXCLUDED.lr,
+                epoch_seconds = EXCLUDED.epoch_seconds
+            """,
+            (
+                self.run_id, row["epoch"], row["train_loss"], row["val_loss"],
+                row["val_f1_background"], row["val_f1_building"], row["val_f1_road"], row["val_f1_flooded"],
+                row["val_coverage_background_pred_images"], row["val_coverage_building_pred_images"],
+                row["val_coverage_road_pred_images"], row["val_coverage_flooded_pred_images"],
+                row["lr"], row["seconds"],
+            ),
+        )
+        self.conn.commit()
+
     def log_epoch(self, row: dict) -> None:
         if not self.enabled:
             return
         try:
-            cur = self.conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO epoch_logs (
-                    run_id, epoch, train_loss, val_loss,
-                    f1_background, f1_building, f1_road, f1_flooded,
-                    pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
-                    lr, epoch_seconds
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (run_id, epoch) DO UPDATE SET
-                    train_loss = EXCLUDED.train_loss,
-                    val_loss = EXCLUDED.val_loss,
-                    f1_background = EXCLUDED.f1_background,
-                    f1_building = EXCLUDED.f1_building,
-                    f1_road = EXCLUDED.f1_road,
-                    f1_flooded = EXCLUDED.f1_flooded,
-                    pred_images_background = EXCLUDED.pred_images_background,
-                    pred_images_building = EXCLUDED.pred_images_building,
-                    pred_images_road = EXCLUDED.pred_images_road,
-                    pred_images_flooded = EXCLUDED.pred_images_flooded,
-                    lr = EXCLUDED.lr,
-                    epoch_seconds = EXCLUDED.epoch_seconds
-                """,
-                (
-                    self.run_id, row["epoch"], row["train_loss"], row["val_loss"],
-                    row["val_f1_background"], row["val_f1_building"], row["val_f1_road"], row["val_f1_flooded"],
-                    row["val_coverage_background_pred_images"], row["val_coverage_building_pred_images"],
-                    row["val_coverage_road_pred_images"], row["val_coverage_flooded_pred_images"],
-                    row["lr"], row["seconds"],
-                ),
-            )
-            self.conn.commit()
+            self._write_epoch(row)
+            return
         except Exception as e:  # noqa: BLE001
-            # BUG THIS FIXES: a failed query leaves the connection's
-            # transaction in an ABORTED state until an explicit ROLLBACK --
-            # Postgres refuses every subsequent command on that connection
-            # ("current transaction is aborted") until then. Without this,
-            # a single transient failure (a network blip, Neon's compute
-            # briefly suspended/waking) would silently break DB logging for
-            # every remaining epoch of the run, not just the one that hit
-            # the blip -- confirmed by reproducing it directly against the
-            # live DB: one failed query, then a plain `SELECT 1` on the
-            # same connection also failed with InFailedSqlTransaction.
+            # BUG THIS FIXES (part 1, already landed): a failed query leaves
+            # the connection's transaction ABORTED until an explicit
+            # ROLLBACK. rollback() alone isn't enough though -- confirmed on
+            # this exact project's own v7 run: epoch 1 logged successfully,
+            # then every one of epochs 2-6 silently failed, because Neon's
+            # serverless compute suspends an idle connection outright (this
+            # project's epochs take 400-650s each, comfortably past Neon's
+            # idle-suspend window) -- rollback() on an already-DEAD
+            # connection just raises again and is swallowed, so the ONE
+            # long-lived self.conn opened at __init__ never worked again for
+            # the rest of the run. A fresh connect() (not just rollback) is
+            # the actual fix; retry the write once on the new connection
+            # before giving up on this epoch.
+            print(f"[db_logger] epoch {row.get('epoch')} write failed ({e}), reconnecting and retrying once")
             try:
-                self.conn.rollback()
-            except Exception:  # noqa: BLE001 - the connection may be fully dead; give up quietly
+                self.conn.close()
+            except Exception:  # noqa: BLE001
                 pass
-            print(f"[db_logger] epoch {row.get('epoch')} write failed, continuing without it: {e}")
+            try:
+                self.conn = psycopg2.connect(_load_database_url(), connect_timeout=5)
+                self._write_epoch(row)
+                print(f"[db_logger] epoch {row.get('epoch')} logged after reconnecting")
+            except Exception as e2:  # noqa: BLE001
+                print(f"[db_logger] epoch {row.get('epoch')} still failed after reconnecting, continuing without it: {e2}")

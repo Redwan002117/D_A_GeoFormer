@@ -964,6 +964,78 @@ useful base and the actually-useful epoch-2 state is unrecoverable. This
 was a cheap restart to make, not a wasted one: the good result appeared
 in the first 2 epochs last time, not after 100+.
 
+### 12.13 v7 (backbone freezing + min_f1): the fix works, the collapse still doesn't
+
+v6 was stopped after 1 epoch once `--checkpoint-metric min_f1` was
+confirmed protecting the good result correctly; v7 adds
+`--freeze-backbone-epochs 3` (S12.11.1, verified ~1.6x faster per step
+while frozen) on top of the same config.
+
+| epoch | val_loss | building F1 (cov) | road F1 (cov) | flooded F1 (cov) |
+|---|---|---|---|---|
+| 1 | 0.730 | 0.371 (82/87) | 0.305 (86/87) | 0.161 (82/87) |
+| 2 | 0.401 | 0.355 (35/87) | 0.297 (87/87) | 0.000 (0/87) |
+| 3 | 0.375 | 0.000 (0/87) | 0.350 (82/87) | 0.000 (0/87) |
+| 4 | 0.399 | 0.000 (0/87) | 0.189 (87/87) | 0.000 (0/87) |
+| 5 | 0.378 | 0.000 (0/87) | 0.336 (86/87) | 0.000 (0/87) |
+| 6 | 0.385 | 0.000 (0/87) | 0.236 (87/87) | 0.000 (0/87) |
+| 7 | 0.407 | 0.000 (0/87) | 0.169 (87/87) | 0.000 (0/87) |
+| 8 | 0.387 | 0.000 (0/87) | 0.236 (86/87) | 0.000 (0/87) |
+
+**The `min_f1` checkpoint fix works exactly as designed, verified in a
+real extended run, not just a unit test**: `checkpoints/best.pt` is
+still epoch 1 (`best_score` = -0.161, `flooded`'s F1 at that epoch, the
+worst class present) after 8 further epochs of collapse -- confirmed by
+loading the checkpoint file directly and reading its own recorded
+metadata. The exact loss the S12.12 bug caused did not repeat.
+
+**The backbone-freeze/unfreeze boundary (epoch 3->4) produced no visible
+change in the collapse pattern** -- `building`/`flooded` were already
+collapsed by epoch 3, still frozen, and stayed collapsed straight through
+unfreezing at epoch 4 with no recovery. This is real, useful negative
+evidence: it argues against "the pretrained backbone's own features are
+being disrupted by early gradients" as the mechanism, and for the S12.10
+synthesis instead -- a single joint 4-way softmax head forcing every
+foreground class to compete for the same probability mass, independent
+of what's feeding it. `road` itself never fully collapsed across all 8
+epochs (oscillating 0.17-0.36, no clear trend either direction).
+
+### 12.14 What would actually need to change next
+
+Named plainly, in rough order of how directly each one addresses the
+mechanism above rather than working around it:
+
+1. **Decouple flood detection from the joint softmax** (the change the
+   competition research in S12.8 points at most directly). Concretely:
+   a second, binary output head (flooded / not-flooded) trained with its
+   own loss, added to the existing building/road/background 3-way head's
+   logits rather than competing inside one 4-way softmax with them. This
+   also matches SpaceNet-8's own real label semantics better -- flooding
+   is an attribute of a building or road, not a mutually exclusive
+   category -- but needs the original per-tile GeoJSON re-rasterized to
+   recover that attribute information, since this project's current mask
+   format already collapsed it to a single class index before this
+   architecture question came up.
+2. **A bigger pretrained backbone.** `efficientnet_b0` is the CPU-tractable
+   choice available in this environment; a `timm` MaxViT or ConvNeXt
+   variant closer to the thesis's own Phase 2 description needs a GPU
+   (Colab) to be practical, and hasn't been tried.
+3. **A focal-Tversky variant of the loss** (`(1-TI)^(1/gamma)` per class
+   before weighting), on top of the class-weighted mean already built --
+   literature-supported (Abraham & Khan 2018) as complementary to, not a
+   replacement for, class weighting: it additionally down-weights
+   already-easy pixels within a class rather than only reweighting
+   classes against each other.
+4. **A held-out early-stopping criterion tied to `min_f1` specifically**,
+   not just checkpoint *selection* -- e.g. stop increasing an unfrozen
+   backbone's learning rate, or reduce it, the moment `min_f1` regresses
+   for N consecutive epochs, instead of letting a full cosine schedule
+   run to completion regardless of what the rare classes are doing.
+5. **More epochs on the SAME config**, least likely to help on current
+   evidence (v7's collapse pattern looks settled by epoch 3, not still
+   converging) but cheapest to just try given how fast a good result
+   appeared last time (2 epochs, not 100+).
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

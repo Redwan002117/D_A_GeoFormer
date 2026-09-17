@@ -126,6 +126,8 @@
     padding: 16px 18px 18px; animation: rise .3s ease both;
   }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .tab-enter { animation: tabRise .28s cubic-bezier(.2,.7,.3,1) both; }
+  @keyframes tabRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
   .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   .card h2 {
     font: 600 12px/1 var(--font-display); text-transform: uppercase; letter-spacing: .08em;
@@ -187,6 +189,17 @@
   .aoi-bar-track { flex: 1; height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
   .aoi-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--violet)); }
   .aoi-count { width: 46px; flex: none; text-align: right; font-family: var(--font-mono); color: var(--text-faint); }
+
+  /* ---------- per-run class-F1 bars (Analytics) ---------- */
+  .run-bar-group { padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+  .run-bar-group:last-child { border-bottom: none; }
+  .run-bar-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .run-bar-group-head b { font-family: var(--font-mono); font-size: 12.5px; }
+  .run-bar-row { display: grid; grid-template-columns: 64px 1fr 48px; align-items: center; gap: 10px; margin-bottom: 5px; font-size: 11.5px; }
+  .run-bar-row .cls-label { color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; font-size: 10px; font-weight: 600; }
+  .run-bar-track { height: 9px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+  .run-bar-fill { height: 100%; border-radius: 4px; transition: width .4s cubic-bezier(.2,.7,.3,1); }
+  .run-bar-val { font-family: var(--font-mono); color: var(--text-dim); text-align: right; }
 
   /* ---------- upload form ---------- */
   form { display: flex; flex-direction: column; gap: 12px; }
@@ -264,7 +277,24 @@
         <div id="latestRunCard">loading&hellip;</div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Recent activity</h2></div>
+        <div class="card-head"><h2>Latest run &mdash; F1 trend</h2></div>
+        <div class="chart-wrap"><canvas id="overviewChart" height="160"></canvas><div class="chart-tooltip" id="overviewTooltip"></div></div>
+        <div class="legend-row" id="overviewLegendRow"></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card wide">
+        <div class="card-head"><h2>Quick view <span class="dim">latest logged epoch per run</span></h2></div>
+        <div class="table-wrap">
+          <table id="quickViewTable">
+            <thead><tr><th>Run</th><th>Model</th><th>Epoch</th><th>Building F1</th><th>Road F1</th><th>Flooded F1</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card wide">
+        <div class="card-head"><h2>Activity log</h2><span class="dim" id="activityCount"></span></div>
         <div id="activityFeed">loading&hellip;</div>
       </div>
     </div>
@@ -309,9 +339,13 @@
     <div class="grid">
       <div class="card wide">
         <div class="card-head"><h2>Best F1 ever reached, per class, per run</h2></div>
-        <p class="desc">The single highest F1 any epoch of a run reached for each class — not the final epoch, since a run's best result for a class often isn't its last (see the collapse table below).</p>
-        <div class="chart-wrap"><canvas id="barChart" height="260"></canvas><div class="chart-tooltip" id="barTooltip"></div></div>
-        <div class="legend-row" id="barLegendRow"></div>
+        <p class="desc">The single highest F1 any epoch of a run reached for each class — not the final epoch, since a run's best result for a class often isn't its last (see the collapse table below). Bars run 0&ndash;1.</p>
+        <div class="legend-row" style="margin:0 0 14px">
+          <span class="legend-item"><span class="legend-swatch" style="background:#ff6f6f"></span>building</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#2fd8c9"></span>road</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#f5b862"></span>flooded</span>
+        </div>
+        <div id="runBarChart"></div>
       </div>
       <div class="card wide">
         <div class="card-head"><h2>Class collapse summary</h2></div>
@@ -351,6 +385,10 @@
     <div class="grid cols-2">
       <div class="card">
         <h2>Submit new sample</h2>
+        <div id="uploadsDisabledNote" class="note" hidden>
+          Uploads aren't available on this deployment (no persistent storage here) &mdash;
+          run the dashboard locally to submit new samples. See <code>docs/VERCEL_DEPLOYMENT.md</code>.
+        </div>
         <form id="sampleForm">
           <div class="dropzone"><label>Pre-event image <input type="file" name="pre" accept="image/*" required></label></div>
           <div class="dropzone"><label>Post-event image <input type="file" name="post" accept="image/*" required></label></div>
@@ -398,7 +436,14 @@ document.getElementById('tabNav').addEventListener('click', e => {
   const btn = e.target.closest('button[data-tab]');
   if (!btn) return;
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b === btn));
-  document.querySelectorAll('section[id^="tab-"]').forEach(s => s.hidden = (s.id !== `tab-${btn.dataset.tab}`));
+  const target = document.getElementById(`tab-${btn.dataset.tab}`);
+  document.querySelectorAll('section[id^="tab-"]').forEach(s => s.hidden = (s !== target));
+  // Restart the section's own entrance animation on every switch (a fresh
+  // reflow, not just the one-time page-load animation each .card already
+  // has) -- forces the browser to recompute style before re-adding the
+  // class, or the animation silently no-ops on the second+ switch to a
+  // tab it's already seen.
+  target.classList.remove('tab-enter'); void target.offsetWidth; target.classList.add('tab-enter');
   if (btn.dataset.tab === 'analytics') renderAnalytics();
 });
 
@@ -423,8 +468,16 @@ async function getEpochs(runId) {
 }
 
 async function loadRuns() {
+  let bestStats = null;
   try {
-    runsData = await fetchJSON('/api/runs');
+    // /api/runs (lightweight, aggregated) and /api/stats/best (one small
+    // indexed query per class server-side) load in parallel -- neither
+    // needs every run's full epoch history fetched client-side, which is
+    // what made the dashboard slower every time a new run was added.
+    [runsData, bestStats] = await Promise.all([
+      fetchJSON('/api/runs'),
+      fetchJSON('/api/stats/best').catch(() => null),
+    ]);
     setLive(true);
   } catch (e) {
     setLive(false);
@@ -433,14 +486,20 @@ async function loadRuns() {
   }
   renderRunsTable();
   document.getElementById('statRuns').textContent = runsData.length;
-
-  await Promise.all(runsData.map(r => r.n_epochs ? getEpochs(r.id) : Promise.resolve([])));
-  renderHeroStats();
-  renderOverview();
+  if (bestStats) renderHeroStats(bestStats);
+  renderActivityFeed();
+  renderQuickView();
 
   if (runsData.length) {
     const lastRun = runsData[runsData.length - 1];
     selectRun(lastRun.id, lastRun.run_name, lastRun.notes);
+    // Independent of whatever the user later clicks in the Training tab's
+    // table -- the Overview card always reflects the actually-latest run.
+    getEpochs(lastRun.id).then(rows => {
+      renderLatestRunCard(lastRun, rows);
+      drawLineChart('overviewChart', 'overviewTooltip', 'overviewLegendRow', rows,
+        CLASS_SERIES.map(s => ({ ...s, key: s.key })), { min: 0, max: 1, fmt: v => v.toFixed(2), yLabel: 'F1 score' });
+    });
   }
 }
 
@@ -467,22 +526,14 @@ function selectRun(runId, runName, notes) {
 }
 
 /* ---------------- hero stats + overview ---------------- */
-function bestOf(key) {
-  let best = { v: -1, run: '', epoch: null };
-  runsData.forEach(r => (epochsCache[r.id] || []).forEach(row => {
-    if (row[key] > best.v) best = { v: row[key], run: r.run_name, epoch: row.epoch };
-  }));
-  return best;
-}
-
-function renderHeroStats() {
-  [['statBuilding', 'statBuildingHint', 'f1_building'],
-   ['statFlooded', 'statFloodedHint', 'f1_flooded'],
-   ['statRoad', 'statRoadHint', 'f1_road']].forEach(([valId, hintId, key]) => {
-    const best = bestOf(key);
-    if (best.v >= 0) {
-      document.getElementById(valId).textContent = best.v.toFixed(3);
-      document.getElementById(hintId).textContent = `${best.run}, epoch ${best.epoch}`;
+function renderHeroStats(bestStats) {
+  [['statBuilding', 'statBuildingHint', 'building'],
+   ['statFlooded', 'statFloodedHint', 'flooded'],
+   ['statRoad', 'statRoadHint', 'road']].forEach(([valId, hintId, cls]) => {
+    const best = bestStats[cls];
+    if (best) {
+      document.getElementById(valId).textContent = best.f1.toFixed(3);
+      document.getElementById(hintId).textContent = `${best.run_name}, epoch ${best.epoch}`;
     }
   });
 }
@@ -495,43 +546,76 @@ function classCollapsedAtLatest(row) {
   return out;
 }
 
-function renderOverview() {
-  if (!runsData.length) return;
-  const latest = runsData[runsData.length - 1];
-  const rows = epochsCache[latest.id] || [];
-  const last = rows[rows.length - 1];
-  const card = document.getElementById('latestRunCard');
-  if (!last) {
-    card.innerHTML = `<div class="note">${esc(latest.run_name)} has no logged epochs yet.</div>`;
-  } else {
-    const collapsed = classCollapsedAtLatest(last);
-    card.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <span class="pill ${latest.model_type}">${esc(latest.model_type)}</span>
-        <b style="font-family:var(--font-mono)">${esc(latest.run_name)}</b>
-      </div>
-      <div style="font-family:var(--font-mono);font-size:12.5px;color:var(--text-dim);line-height:1.9">
-        epoch <b style="color:var(--text)">${last.epoch}</b> &middot;
-        val_loss <b style="color:var(--text)">${fmt(last.val_loss)}</b><br>
-        ${CLASS_SERIES.map(s => `<span style="color:${s.color}">${s.label}</span> ${fmt(row_or(last, s.key), 3)}`).join(' &middot; ')}
-      </div>
-      <div class="note" style="margin-top:12px">${collapsed.length
-        ? `<span class="flag">&#9888; Collapsed right now: ${collapsed.join(', ')}</span>`
-        : '<span class="ok">&#10003; No class collapsed at the latest logged epoch</span>'}</div>`;
-  }
-
+function renderActivityFeed() {
+  // Built entirely from /api/runs' own aggregates -- no per-run epoch
+  // fetch needed just to populate this. Every run, newest first, full
+  // date + time (not just the date) since "when exactly did this land"
+  // is the whole point of an activity log.
   const feed = document.getElementById('activityFeed');
-  const items = runsData.slice(-6).reverse().map(r => {
-    const rows2 = epochsCache[r.id] || [];
-    const l = rows2[rows2.length - 1];
-    return `<div class="activity-item"><div class="activity-dot"></div>
+  const sorted = [...runsData].reverse();
+  const items = sorted.map(r => {
+    const collapsedNow = [
+      r.pred_images_building === 0 ? 'building' : null,
+      r.pred_images_road === 0 ? 'road' : null,
+      r.pred_images_flooded === 0 ? 'flooded' : null,
+    ].filter(Boolean);
+    return `
+    <div class="activity-item"><div class="activity-dot" style="background:${collapsedNow.length ? 'var(--bad)' : 'var(--accent)'}"></div>
       <div class="activity-text"><b style="font-family:var(--font-mono)">${esc(r.run_name)}</b> &mdash;
-      ${l ? `epoch ${l.epoch}, val_loss ${fmt(l.val_loss)}` : 'no epochs yet'}</div>
-      <div class="activity-time">${r.created_at ? new Date(r.created_at).toLocaleDateString() : ''}</div></div>`;
+      ${r.last_epoch ? `epoch ${r.last_epoch}, best val_loss ${fmt(r.best_val_loss)}` : 'no epochs yet'}
+      ${collapsedNow.length ? `<span class="flag">(${collapsedNow.join(', ')} collapsed)</span>` : ''}</div>
+      <div class="activity-time">${r.created_at ? new Date(r.created_at).toLocaleString() : ''}</div></div>`;
   }).join('');
+  document.getElementById('activityCount').textContent = `${sorted.length} run${sorted.length === 1 ? '' : 's'}`;
   feed.innerHTML = items || '<div class="note">No runs yet.</div>';
 }
-function row_or(row, key) { return row[key]; }
+
+function renderQuickView() {
+  const tbody = document.querySelector('#quickViewTable tbody');
+  const sorted = [...runsData].reverse();
+  tbody.innerHTML = sorted.map(r => {
+    const collapsedNow = [
+      r.pred_images_building === 0 ? 'building' : null,
+      r.pred_images_road === 0 ? 'road' : null,
+      r.pred_images_flooded === 0 ? 'flooded' : null,
+    ].filter(Boolean);
+    const statusCell = !r.last_epoch ? '<span style="color:var(--text-faint)">&mdash;</span>'
+      : collapsedNow.length ? `<span class="pill status-collapsed">${collapsedNow.join(', ')} collapsed</span>`
+      : '<span class="pill status-ok">all active</span>';
+    return `<tr>
+      <td>${esc(r.run_name)}</td>
+      <td><span class="pill ${r.model_type}">${esc(r.model_type)}</span></td>
+      <td>${r.last_epoch ?? '&mdash;'}</td>
+      <td style="color:#ff6f6f">${fmt(r.f1_building, 3)}</td>
+      <td style="color:#2fd8c9">${fmt(r.f1_road, 3)}</td>
+      <td style="color:#f5b862">${fmt(r.f1_flooded, 3)}</td>
+      <td>${statusCell}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" style="font-family:var(--font-body);color:var(--text-faint)">No runs yet.</td></tr>';
+}
+
+function renderLatestRunCard(run, rows) {
+  const card = document.getElementById('latestRunCard');
+  const last = rows[rows.length - 1];
+  if (!last) {
+    card.innerHTML = `<div class="note">${esc(run.run_name)} has no logged epochs yet.</div>`;
+    return;
+  }
+  const collapsed = classCollapsedAtLatest(last);
+  card.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span class="pill ${run.model_type}">${esc(run.model_type)}</span>
+      <b style="font-family:var(--font-mono)">${esc(run.run_name)}</b>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:12.5px;color:var(--text-dim);line-height:1.9">
+      epoch <b style="color:var(--text)">${last.epoch}</b> &middot;
+      val_loss <b style="color:var(--text)">${fmt(last.val_loss)}</b><br>
+      ${CLASS_SERIES.map(s => `<span style="color:${s.color}">${s.label}</span> ${fmt(last[s.key], 3)}`).join(' &middot; ')}
+    </div>
+    <div class="note" style="margin-top:12px">${collapsed.length
+      ? `<span class="flag">&#9888; Collapsed right now: ${collapsed.join(', ')}</span>`
+      : '<span class="ok">&#10003; No class collapsed at the latest logged epoch</span>'}</div>`;
+}
 
 /* ---------------- per-run charts (Training tab) ---------------- */
 async function loadRunCharts(runId, runName, notes) {
@@ -544,11 +628,14 @@ async function loadRunCharts(runId, runName, notes) {
       (collapsed.length ? `<span class="flag">&#9888; Collapsed (0 predicted images): ${collapsed.join(', ')}</span>` : '<span class="ok">&#10003; No collapsed classes at the latest epoch</span>')
       + (notes ? `<br>${esc(notes)}` : '');
   }
-  drawLineChart('f1Chart', 'f1Tooltip', 'legendRow', rows, CLASS_SERIES.map(s => ({ ...s, key: s.key })), { min: 0, max: 1, fmt: v => v.toFixed(2) });
-  drawLineChart('lossChart', 'lossTooltip', 'lossLegendRow', rows, LOSS_SERIES, { min: 0, max: null, fmt: v => v.toFixed(2) });
-  const total = rows.length ? (rows[0].pred_images_building !== undefined ? 87 : 87) : 87; // held-out set size
+  drawLineChart('f1Chart', 'f1Tooltip', 'legendRow', rows, CLASS_SERIES.map(s => ({ ...s, key: s.key })),
+    { min: 0, max: 1, fmt: v => v.toFixed(2), yLabel: 'F1 score' });
+  drawLineChart('lossChart', 'lossTooltip', 'lossLegendRow', rows, LOSS_SERIES,
+    { min: 0, max: null, fmt: v => v.toFixed(2), yLabel: 'Loss' });
+  const total = 87; // held-out set size (SpaceNet8Dataset.split()'s val fraction of 801 tiles)
   const covSeries = CLASS_SERIES.map(s => ({ key: s.cov, color: s.color, label: s.label }));
-  drawLineChart('covChart', 'covTooltip', 'covLegendRow', rows, covSeries, { min: 0, max: total, fmt: v => Math.round(v) });
+  drawLineChart('covChart', 'covTooltip', 'covLegendRow', rows, covSeries,
+    { min: 0, max: total, fmt: v => Math.round(v), yLabel: 'Images predicted (of 87)' });
 }
 
 /* Generic line chart: rows + series[{key,color,label}] + yDomain{min,max,fmt} */
@@ -564,7 +651,8 @@ function drawLineChart(canvasId, tooltipId, legendId, rows, series, yDomain) {
   const cssW = canvas.clientWidth || 500, cssH = 220;
   const w = canvas.width = cssW * dpr, h = canvas.height = cssH * dpr;
   ctx.clearRect(0, 0, w, h);
-  const padL = 46 * dpr, padR = 10 * dpr, padT = 12 * dpr, padB = 26 * dpr;
+  const hasYLabel = !!yDomain.yLabel;
+  const padL = (hasYLabel ? 58 : 46) * dpr, padR = 10 * dpr, padT = 12 * dpr, padB = 40 * dpr;
   const xs = rows.map(r => r.epoch);
   const minX = Math.min(...xs), maxX = Math.max(...xs);
   let yMax = yDomain.max;
@@ -589,6 +677,18 @@ function drawLineChart(canvasId, tooltipId, legendId, rows, series, yDomain) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.fillText(minX, xOf(minX), h - padB + 18 * dpr);
   ctx.fillText(maxX, xOf(maxX), h - padB + 18 * dpr);
+
+  // axis titles -- "proper labels", not just bare tick numbers
+  ctx.fillStyle = '#7d90aa'; ctx.font = `${10.5 * dpr}px Inter, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Epoch', (padL + w - padR) / 2, h - 8 * dpr);
+  if (hasYLabel) {
+    ctx.save();
+    ctx.translate(14 * dpr, (padT + h - padB) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(yDomain.yLabel, 0, 0);
+    ctx.restore();
+  }
 
   series.forEach(s => {
     ctx.strokeStyle = s.color; ctx.lineWidth = 2.2 * dpr; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
@@ -636,69 +736,49 @@ function initChartTooltip(canvasId, tooltipId) {
 
 /* ---------------- Analytics tab ---------------- */
 let analyticsRendered = false;
-function renderAnalytics() {
+async function renderAnalytics() {
   if (analyticsRendered || !runsData.length) return;
   analyticsRendered = true;
+  const runs = runsData.filter(r => r.n_epochs);
+  document.getElementById('runBarChart').innerHTML = '<div class="note">Loading every run\'s epoch history&hellip;</div>';
+  await Promise.all(runs.map(r => getEpochs(r.id)));  // fetched once here, cached for the rest of the session
   drawBarChart();
   renderCollapseTable();
 }
 
 function drawBarChart() {
-  const canvas = document.getElementById('barChart');
-  const ctx = canvas.getContext('2d');
-  const dpr = 2;
-  const cssW = canvas.clientWidth || 700, cssH = 260;
-  const w = canvas.width = cssW * dpr, h = canvas.height = cssH * dpr;
-  ctx.clearRect(0, 0, w, h);
-  const padL = 46 * dpr, padR = 10 * dpr, padT = 14 * dpr, padB = 46 * dpr;
-
+  // HTML/CSS bars, not canvas -- a grouped canvas bar chart with rotated
+  // run-name labels is exactly the kind of chart that reads as cluttered
+  // at a glance (labels crowd/overlap as more runs are added, and there's
+  // no way to make a run name legible without rotating or truncating it).
+  // One labeled row per run, three always-horizontal, always-readable
+  // bars underneath, scales to any number of runs by simply growing
+  // taller, not more crowded.
   const runs = runsData.filter(r => r.n_epochs);
-  const classKeys = ['f1_building', 'f1_road', 'f1_flooded'];
-  const colors = { f1_building: '#ff6f6f', f1_road: '#2fd8c9', f1_flooded: '#f5b862' };
-  const labels = { f1_building: 'building', f1_road: 'road', f1_flooded: 'flooded' };
-
-  const yOf = v => (h - padB) - v * (h - padT - padB);
-  ctx.strokeStyle = '#16212f'; ctx.lineWidth = 1 * dpr;
-  ctx.fillStyle = '#5d7089'; ctx.font = `${10.5 * dpr}px 'JetBrains Mono', monospace`;
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  [0, 0.25, 0.5, 0.75, 1.0].forEach(v => {
-    const y = yOf(v);
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
-    ctx.fillText(v.toFixed(2), padL - 8 * dpr, y);
-  });
-
-  const groupW = (w - padL - padR) / Math.max(runs.length, 1);
-  const barW = Math.min(14 * dpr, groupW / (classKeys.length + 1.5));
-  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  runs.forEach((r, gi) => {
+  const classKeys = [
+    { key: 'f1_building', label: 'building', color: '#ff6f6f' },
+    { key: 'f1_road', label: 'road', color: '#2fd8c9' },
+    { key: 'f1_flooded', label: 'flooded', color: '#f5b862' },
+  ];
+  const container = document.getElementById('runBarChart');
+  container.innerHTML = runs.map(r => {
     const rows = epochsCache[r.id] || [];
-    const groupCenter = padL + groupW * (gi + 0.5);
-    classKeys.forEach((k, ki) => {
-      const best = rows.reduce((m, row) => Math.max(m, row[k] ?? 0), 0);
-      const x = groupCenter + (ki - 1) * (barW + 3 * dpr);
-      const y = yOf(best);
-      ctx.fillStyle = colors[k];
-      ctx.beginPath();
-      const rad = 2 * dpr;
-      ctx.moveTo(x - barW / 2, h - padB);
-      ctx.lineTo(x - barW / 2, y + rad);
-      ctx.arcTo(x - barW / 2, y, x - barW / 2 + rad, y, rad);
-      ctx.lineTo(x + barW / 2 - rad, y);
-      ctx.arcTo(x + barW / 2, y, x + barW / 2, y + rad, rad);
-      ctx.lineTo(x + barW / 2, h - padB);
-      ctx.closePath(); ctx.fill();
-    });
-    ctx.fillStyle = '#9db0c9'; ctx.font = `${10 * dpr}px Inter, sans-serif`;
-    ctx.save();
-    ctx.translate(groupCenter, h - padB + 14 * dpr);
-    ctx.rotate(-0.35);
-    ctx.textAlign = 'right';
-    ctx.fillText(r.run_name.replace('training_log_', '').replace('.csv', ''), 0, 0);
-    ctx.restore();
-  });
-
-  document.getElementById('barLegendRow').innerHTML = classKeys.map(k =>
-    `<span class="legend-item"><span class="legend-swatch" style="background:${colors[k]}"></span>${labels[k]}</span>`).join('');
+    const bars = classKeys.map(c => {
+      const best = rows.reduce((m, row) => Math.max(m, row[c.key] ?? 0), 0);
+      return `<div class="run-bar-row">
+        <div class="cls-label">${c.label}</div>
+        <div class="run-bar-track"><div class="run-bar-fill" style="width:${(best * 100).toFixed(1)}%;background:${c.color}"></div></div>
+        <div class="run-bar-val">${best.toFixed(3)}</div>
+      </div>`;
+    }).join('');
+    return `<div class="run-bar-group">
+      <div class="run-bar-group-head">
+        <span class="pill ${r.model_type}">${esc(r.model_type)}</span>
+        <b>${esc(r.run_name)}</b>
+      </div>
+      ${bars}
+    </div>`;
+  }).join('') || '<div class="note">No runs with logged epochs yet.</div>';
 }
 
 function renderCollapseTable() {
@@ -786,14 +866,24 @@ document.getElementById('sampleForm').addEventListener('submit', async (e) => {
   }
 });
 
-['f1Chart', 'lossChart', 'covChart'].forEach(id => initChartTooltip(id, id.replace('Chart', 'Tooltip')));
-initChartTooltip('barChart', 'barTooltip');
+['f1Chart', 'lossChart', 'covChart', 'overviewChart'].forEach(id => initChartTooltip(id, id.replace('Chart', 'Tooltip')));
 window.addEventListener('resize', () => {
   const activeRow = document.querySelector('#runsTable tbody tr.active');
   if (activeRow) loadRunCharts(activeRow.dataset.runId, '', '');
   if (analyticsRendered) drawBarChart();
 });
 
+async function loadConfig() {
+  try {
+    const cfg = await fetchJSON('/api/config');
+    if (!cfg.uploads_enabled) {
+      document.getElementById('sampleForm').hidden = true;
+      document.getElementById('uploadsDisabledNote').hidden = false;
+    }
+  } catch (e) { /* older deployment without /api/config -- uploads assumed enabled */ }
+}
+
+loadConfig();
 loadRuns();
 loadDataset();
 loadSamples();
