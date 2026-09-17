@@ -357,6 +357,31 @@ only `last.pt`/`best.pt`, so the exact epoch-by-epoch masks can't be
 replayed after the fact) — flagged here as the honest state of
 investigation, not presented as a confirmed root cause.
 
+### 12.2 The full public dataset, and a baseline comparison run
+
+All 801 real, publicly-labeled SpaceNet-8 tiles (Germany's 202 + all 599 of
+Louisiana-East) are downloaded in `real_sn8_dataset_full/` — this is the
+complete public-labeled dataset, not a sample of it. Pulling the last ~180
+tiles surfaced a real environment finding worth recording: two background
+jobs (this download plus a concurrent baseline training run) both got
+killed by the OS for memory pressure, twice, on a shared machine with only
+~2.5-4GB free at the time — and a single job alone was *also* killed once.
+No lingering process was left behind by any of these kills, and no data was
+lost either time: `prepare_real_data.py`'s per-tile `index.json` write and
+`train.py`'s per-epoch checkpoint both did exactly what they were built to
+do, and each resumed cleanly from where it left off. **Practical lesson**:
+on a memory-constrained, shared machine, don't assume two background jobs
+that each look individually lightweight are safe to run concurrently —
+run one at a time, and lean on the incremental-save design to make
+interruption cheap rather than trying to avoid it.
+
+`baseline.py`'s SN8Baseline (U-Net/ResNet-34, no bi-temporal fusion — the
+literature review's comparison point) is now training on the full 801-tile
+set, resumed through the same kill via `--resume`. See
+`sample_outputs/training_log_baseline_real.csv` for the up-to-date run —
+this is the first genuine baseline-vs-GeoFormer comparison on identical
+real data, not a citation to SN-8's own published numbers.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
@@ -367,7 +392,7 @@ one below is what was actually observed, not a generic list.
 |---|---|---|---|
 | **Compute (no GPU)** | A single forward+backward pass at 256px/batch 8 took ~4.5s on CPU; a full epoch over ~180 real tiles took 90–100s | Batch size and image size are kept modest by default so training stays CPU-tractable at all | `notebooks/train_on_colab.ipynb` gets a free GPU and can run much larger batches/epochs in the same wall-clock time |
 | **Memory** | Training at `--batch-size 8, --image-size 256` got the process **killed by the OS** for memory, with zero Python traceback — see `docs/INSTALL.md` §7 | `--batch-size 2` is now the real-data default; INSTALL.md documents the batch-size-vs-free-RAM tradeoff as measured, not guessed | A dedicated machine or Colab (with more headroom, or a GPU where activations live in VRAM, not system RAM) can safely use larger batches |
-| **Real data volume** | One AOI (Germany, 202 tiles) is not enough — 20 biased tiles overfit badly (§12); the full 202-tile Germany AOI is still one geography | `prepare_real_data.py` now pulls from multiple real AOIs (`--aoi Germany_Training_Public,Louisiana-East_Training_Public` or `--aoi all`), namespaced so tile ids never collide, appendable across runs (`--append`) so a long multi-AOI pull surviving an interruption doesn't lose progress (index.json is written after every tile, not just at the end) | SpaceNet-8's full public bucket has Germany (202 tiles) + Louisiana-East (599 tiles) with real labels = 801 tiles total; a genuinely large benchmark result still needs more than that, and Louisiana-West is present but unlabeled (SN-8's own blind test set) |
+| **Real data volume** | One AOI (Germany, 202 tiles) is not enough — 20 biased tiles overfit badly (§12); the full 202-tile Germany AOI alone is still one geography, and flooded F1 stayed at 0.000 for 90 epochs on it | `prepare_real_data.py` pulls from multiple real AOIs (`--aoi Germany_Training_Public,Louisiana-East_Training_Public` or `--aoi all`), namespaced so tile ids never collide, appendable across runs (`--append`) so an interrupted pull doesn't lose progress. **All 801 real, publicly-labeled tiles across both AOIs are now downloaded** (Germany 202 + Louisiana-East 599, the entire labeled public SN-8 dataset — Louisiana-West is imagery-only, SN-8's own blind test set) — see §12.2 | This is the ceiling of what's publicly labeled; a genuinely large benchmark result beyond this needs either unpublished held-out labels or a different, larger dataset entirely |
 | **S3 listing/scanning speed** | Scanning every AOI's annotations for flood content is 200–600 sequential `s3.get_object` calls, one tile at a time — the slow, silent part of `prepare_real_data.py` (no per-file progress printed during this phase, which looked like a hang the first time it happened) | Known and documented here, not hidden | A real fix (not yet done): parallelize the scan with a thread pool (the original draft repo's `download_data.py` already did this for its own download step) — worth doing before pulling `--aoi all` at real scale |
 
 The honest summary: every bottleneck above has either already been worked
