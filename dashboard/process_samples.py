@@ -77,6 +77,19 @@ def main():
             conn.commit()
             print(f"sample {sample_id}: {result['predicted_classes_present']}")
         except Exception as e:  # noqa: BLE001
+            # BUG THIS FIXES: if the exception came from the 'processed'
+            # UPDATE above (a DB-side error, not an image/inference one),
+            # the connection's transaction is left ABORTED and this
+            # recovery UPDATE would hit the same "current transaction is
+            # aborted" failure -- uncaught, crashing the whole script and
+            # abandoning every remaining pending sample in the loop as
+            # permanently 'pending'. Same bug class just fixed in
+            # db/db_logger.py's log_epoch; rollback() first so the
+            # recovery write (and every sample after it) can still land.
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001 - connection may be fully dead
+                pass
             write_cur = conn.cursor()
             write_cur.execute(
                 "UPDATE samples SET status = 'failed', error_message = %s WHERE id = %s",
