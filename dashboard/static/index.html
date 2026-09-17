@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoFormer Dashboard</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #121b2e; --panel-2: #17233b; --border: #223252;
+    --text: #e7edf7; --muted: #93a3c2; --accent: #5fb0ff; --accent-2: #7ee0c3;
+    --warn: #ffb454; --bad: #ff6b6b; --good: #7ee0c3;
+    font-variant-numeric: tabular-nums;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 20px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  tr:hover td { background: var(--panel-2); cursor: pointer; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+  .pill.geoformer { background: #1b3a5c; color: var(--accent); }
+  .pill.baseline { background: #3a2b1b; color: var(--warn); }
+  .flag { color: var(--bad); font-weight: 600; }
+  .ok { color: var(--good); }
+  canvas { max-width: 100%; }
+  form { display: flex; flex-direction: column; gap: 10px; }
+  input[type=file] { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; color: var(--text); width: 100%; }
+  button { background: var(--accent); color: #08111f; border: none; border-radius: 6px; padding: 10px 14px; font-weight: 600; cursor: pointer; }
+  button:hover { opacity: .9; }
+  #sampleStatus { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .wide { grid-column: 1 / -1; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Dual-Axis GeoFormer &mdash; Dashboard</h1>
+  <div class="sub">Every training run this project has produced, live from Neon Postgres, plus new-sample intake.</div>
+
+  <div class="grid">
+    <div class="card wide">
+      <h2>Training runs</h2>
+      <table id="runsTable">
+        <thead><tr><th>Run</th><th>Model</th><th>Data source</th><th>Epochs</th><th>Best val_loss</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="note" id="runsNote"></div>
+    </div>
+
+    <div class="card wide">
+      <h2 id="chartTitle">Per-class F1 over epochs &mdash; click a run above</h2>
+      <canvas id="f1Chart" height="90"></canvas>
+      <div class="note" id="coverageNote"></div>
+    </div>
+
+    <div class="card">
+      <h2>Dataset</h2>
+      <div id="datasetStats">loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>Submit new sample (pre/post image pair)</h2>
+      <form id="sampleForm">
+        <label>Pre-event image<input type="file" name="pre" accept="image/*" required></label>
+        <label>Post-event image<input type="file" name="post" accept="image/*" required></label>
+        <button type="submit">Upload</button>
+      </form>
+      <div id="sampleStatus"></div>
+      <div class="note">Saved as "pending" &mdash; run <code>python dashboard/process_samples.py</code> to run inference on it.</div>
+    </div>
+
+    <div class="card wide">
+      <h2>Recent samples</h2>
+      <table id="samplesTable">
+        <thead><tr><th>ID</th><th>Status</th><th>Submitted</th><th>Result</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function fmt(n, d=4) { return (n === null || n === undefined) ? '&mdash;' : Number(n).toFixed(d); }
+
+async function loadRuns() {
+  const runs = await fetchJSON('/api/runs');
+  const tbody = document.querySelector('#runsTable tbody');
+  tbody.innerHTML = '';
+  runs.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.run_name}</td>
+      <td><span class="pill ${r.model_type}">${r.model_type}</span></td>
+      <td>${r.data_source || '&mdash;'}</td>
+      <td>${r.last_epoch ?? '&mdash;'} (${r.n_epochs} rows)</td>
+      <td>${fmt(r.best_val_loss)}</td>`;
+    tr.onclick = () => loadEpochs(r.id, r.run_name, r.notes);
+    tbody.appendChild(tr);
+  });
+  document.getElementById('runsNote').textContent = `${runs.length} run(s) loaded.`;
+  if (runs.length) loadEpochs(runs[runs.length - 1].id, runs[runs.length - 1].run_name, runs[runs.length - 1].notes);
+}
+
+let chart = null;
+async function loadEpochs(runId, runName, notes) {
+  const rows = await fetchJSON(`/api/runs/${runId}/epochs`);
+  document.getElementById('chartTitle').textContent = `Per-class F1 over epochs — ${runName}`;
+  const last = rows[rows.length - 1];
+  const collapsed = [];
+  if (last.pred_images_building === 0) collapsed.push('building');
+  if (last.pred_images_flooded === 0) collapsed.push('flooded');
+  document.getElementById('coverageNote').innerHTML =
+    (collapsed.length ? `<span class="flag">COLLAPSED classes (0 predicted images): ${collapsed.join(', ')}</span>` : '<span class="ok">No collapsed classes in the latest epoch.</span>')
+    + (notes ? `<br>${notes}` : '');
+  drawChart(rows);
+}
+
+function drawChart(rows) {
+  const canvas = document.getElementById('f1Chart');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.clientWidth * 2;
+  const h = canvas.height = 220 * 2;
+  ctx.clearRect(0, 0, w, h);
+  const pad = 40 * 2;
+  const xs = rows.map(r => r.epoch);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const series = [
+    { key: 'f1_background', color: '#5fb0ff', label: 'background' },
+    { key: 'f1_building', color: '#ff6b6b', label: 'building' },
+    { key: 'f1_road', color: '#7ee0c3', label: 'road' },
+    { key: 'f1_flooded', color: '#ffb454', label: 'flooded' },
+  ];
+  // axes
+  ctx.strokeStyle = '#223252';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, h - pad); ctx.lineTo(w - pad, h - pad);
+  ctx.moveTo(pad, pad); ctx.lineTo(pad, h - pad);
+  ctx.stroke();
+  ctx.fillStyle = '#93a3c2';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('0.0', pad - 36, h - pad + 6);
+  ctx.fillText('1.0', pad - 36, pad + 6);
+
+  const xOf = e => pad + (maxX === minX ? 0 : (e - minX) / (maxX - minX)) * (w - 2 * pad);
+  const yOf = v => (h - pad) - (v ?? 0) * (h - 2 * pad);
+
+  series.forEach(s => {
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    rows.forEach((r, i) => {
+      const x = xOf(r.epoch), y = yOf(r[s.key]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+
+  // legend
+  let lx = pad;
+  series.forEach(s => {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(lx, 10, 16, 16);
+    ctx.fillStyle = '#e7edf7';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(s.label, lx + 22, 24);
+    lx += ctx.measureText(s.label).width + 60;
+  });
+}
+
+async function loadDataset() {
+  try {
+    const d = await fetchJSON('/api/dataset');
+    const rows = Object.entries(d.by_aoi).map(([aoi, n]) => `<div>${aoi}: <b>${n}</b> tiles</div>`).join('');
+    document.getElementById('datasetStats').innerHTML = `<div>Total: <b>${d.total_tiles}</b> tiles</div>${rows}`;
+  } catch (e) {
+    document.getElementById('datasetStats').textContent = 'Dataset index not found locally.';
+  }
+}
+
+async function loadSamples() {
+  const rows = await fetchJSON('/api/samples');
+  const tbody = document.querySelector('#samplesTable tbody');
+  tbody.innerHTML = '';
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    const result = r.result_json ? Object.entries(r.result_json.pixel_counts || {}).filter(([,n]) => n > 0).map(([k]) => k).join(', ') : (r.error_message || '&mdash;');
+    tr.innerHTML = `<td>${r.id}</td><td>${r.status}</td><td>${new Date(r.submitted_at).toLocaleString()}</td><td>${result}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById('sampleForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  document.getElementById('sampleStatus').textContent = 'Uploading…';
+  try {
+    const res = await fetchJSON('/api/samples', { method: 'POST', body: fd });
+    document.getElementById('sampleStatus').textContent = `Saved as sample #${res.sample_id} (pending).`;
+    loadSamples();
+  } catch (err) {
+    document.getElementById('sampleStatus').textContent = 'Upload failed: ' + err.message;
+  }
+});
+
+loadRuns();
+loadDataset();
+loadSamples();
+</script>
+</body>
+</html>

@@ -33,6 +33,7 @@ from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
 from losses import TverskyLoss
 from model import DualAxisGeoFormer, GeoFormerConfig
 from baseline import SN8Baseline
+from db.db_logger import DBLogger
 
 
 def per_class_f1(logits: torch.Tensor, target: torch.Tensor, num_classes: int, eps: float = 1e-7):
@@ -260,6 +261,13 @@ def main():
 
     class_names = ["background", "building", "road", "flooded"]
 
+    db_logger = DBLogger(
+        run_name=Path(args.log_csv).name,
+        model_type=args.model,
+        data_source=args.data_dir if args.data_dir else "synthetic",
+        config_dict=dataclasses.asdict(model.cfg) if args.model == "geoformer" else None,
+    )
+
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
         model.train()
@@ -320,6 +328,7 @@ def main():
             writer = csv.DictWriter(f, fieldnames=list(log_rows[0].keys()))
             writer.writeheader()
             writer.writerows(log_rows)
+        db_logger.log_epoch(log_rows[-1])
 
         ckpt_payload = {
             "epoch": epoch, "model_state": model.state_dict(),

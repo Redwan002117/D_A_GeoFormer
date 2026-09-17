@@ -13,3 +13,9 @@ real_sn8_preview/
 *.pth
 data/
 results/
+checkpoints_baseline/
+real_sn8_dataset_full/
+
+# Dashboard: DB credentials and user-submitted images never get committed
+.env
+dashboard/sample_uploads/

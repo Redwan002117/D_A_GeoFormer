@@ -71,9 +71,29 @@ converge on it, which is exactly the thesis's own next milestone."*
 - `demo.py` — synthetic end-to-end demo, loads `checkpoints/best.pt` by default.
 - `real_image_demo.py` — runs the pipeline on a real public-domain flood photo.
 - `serve.py` / `Dockerfile` — deployable inference API.
+- `db/`, `dashboard/` — training-history + new-sample dashboard (see below).
 - `tests/` — pytest suite.
 - `docs/INSTALL.md` / `docs/MANUAL.md` / `docs/DEPLOYMENT.md` — setup, usage, and deployment docs.
 - `sample_outputs/` — figures, training curves, and logs from the runs described above.
+
+## Dashboard — training history + new-sample intake
+
+A small web UI backed by Postgres (Neon), so every run's history and every submitted sample lives in one place instead of scattered CSVs.
+
+```bash
+cp .env.example .env            # fill in DATABASE_URL (any Postgres works, Neon is what this project uses)
+pip install -r requirements.txt
+python db/init_db.py            # create tables once
+python db/migrate_csv_logs.py   # one-time backfill of every training_log_*.csv already in the repo
+uvicorn dashboard.dashboard_server:app --port 8080
+```
+
+Open `http://localhost:8080`. It shows:
+- Every training run (CSV-era and live), per-class F1 charted per epoch, with the class-**coverage** collapse explicitly flagged (a bare F1 number can hide a class the model never predicts at all — see `docs/MANUAL.md` §12.3).
+- Live dataset tile counts from `real_sn8_dataset_full/index.json`.
+- A form to submit new pre/post image pairs. Uploads are saved as `pending`; run `python dashboard/process_samples.py` to run inference against `checkpoints/best.pt` (or `--checkpoint`) and write results back.
+
+`train.py` also writes each epoch to Postgres automatically when `DATABASE_URL` is set (in addition to, never instead of, its CSV log — the DB write is best-effort and never stops training if it fails).
 
 ## Quickstart (after installing — see above)
 
