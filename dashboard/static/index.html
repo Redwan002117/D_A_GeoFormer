@@ -2,85 +2,263 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>GeoFormer Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0b1220; --panel: #121b2e; --panel-2: #17233b; --border: #223252;
-    --text: #e7edf7; --muted: #93a3c2; --accent: #5fb0ff; --accent-2: #7ee0c3;
-    --warn: #ffb454; --bad: #ff6b6b; --good: #7ee0c3;
-    font-variant-numeric: tabular-nums;
+    --ground: #070c14;
+    --panel: #0e1622;
+    --panel-2: #121d2c;
+    --panel-elevated: #16233590;
+    --border: #1e2c40;
+    --border-soft: #16212f;
+    --text: #eef3fb;
+    --text-dim: #9db0c9;
+    --text-faint: #5d7089;
+    --accent: #2fd8c9;
+    --accent-soft: #2fd8c91a;
+    --accent-ink: #04211d;
+    --violet: #9c8cff;
+    --violet-soft: #9c8cff1a;
+    --good: #3fd483;
+    --warn: #f5b862;
+    --bad: #ff6f6f;
+    --grid-line: #142136;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --font-display: 'Space Grotesk', -apple-system, sans-serif;
+    --font-body: 'Inter', -apple-system, Segoe UI, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin-bottom: 20px; font-size: 13px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; }
-  tr:hover td { background: var(--panel-2); cursor: pointer; }
-  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
-  .pill.geoformer { background: #1b3a5c; color: var(--accent); }
-  .pill.baseline { background: #3a2b1b; color: var(--warn); }
-  .flag { color: var(--bad); font-weight: 600; }
-  .ok { color: var(--good); }
-  canvas { max-width: 100%; }
-  form { display: flex; flex-direction: column; gap: 10px; }
-  input[type=file] { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; color: var(--text); width: 100%; }
-  button { background: var(--accent); color: #08111f; border: none; border-radius: 6px; padding: 10px 14px; font-weight: 600; cursor: pointer; }
-  button:hover { opacity: .9; }
-  #sampleStatus { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; } }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at 14% -10%, #12324a55, transparent 45%),
+      radial-gradient(circle at 100% 0%, #24184a44, transparent 40%),
+      repeating-linear-gradient(0deg, var(--grid-line) 0 1px, transparent 1px 64px),
+      repeating-linear-gradient(90deg, var(--grid-line) 0 1px, transparent 1px 64px),
+      var(--ground);
+    color: var(--text);
+    font: 14px/1.5 var(--font-body);
+    font-variant-numeric: tabular-nums;
+    padding: 0 20px calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+
+  a { color: inherit; }
+
+  /* ---------- header ---------- */
+  header {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 18px 2px 16px;
+    background: linear-gradient(180deg, var(--ground) 78%, transparent);
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 9px; flex: none;
+    background: conic-gradient(from 220deg, var(--accent), var(--violet), var(--accent));
+    display: grid; place-items: center;
+    box-shadow: 0 0 0 1px #ffffff14 inset, 0 6px 18px -6px #2fd8c980;
+  }
+  .brand-mark svg { width: 18px; height: 18px; }
+  h1 { font: 600 17px/1 var(--font-display); margin: 0; letter-spacing: .01em; }
+  .brand-sub { font-size: 12px; color: var(--text-faint); margin-top: 3px; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--text-dim); font-family: var(--font-mono);
+    border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px 6px 10px;
+    background: var(--panel-elevated); backdrop-filter: blur(6px);
+  }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px #3fd48322; }
+  .status-dot.pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+
+  /* ---------- layout ---------- */
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .stat-tile {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 16px; position: relative; overflow: hidden;
+  }
+  .stat-tile::after {
+    content: ''; position: absolute; inset: 0; opacity: 0; transition: opacity .25s;
+    background: radial-gradient(120px 60px at 15% 0%, var(--accent-soft), transparent);
+  }
+  .stat-tile:hover::after { opacity: 1; }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-faint); font-weight: 600; }
+  .stat-value { font: 600 26px/1.3 var(--font-display); margin-top: 6px; }
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.violet { color: var(--violet); }
+  .stat-hint { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; font-family: var(--font-mono); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-bottom: 14px; }
   .wide { grid-column: 1 / -1; }
-  .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 18px 18px; animation: rise .35s ease both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .card h2 {
+    font: 600 12px/1 var(--font-display); text-transform: uppercase; letter-spacing: .08em;
+    color: var(--text-dim); margin: 0; display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .dim { color: var(--text-faint); text-transform: none; letter-spacing: 0; font-family: var(--font-body); font-weight: 400; font-size: 11.5px; }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 480px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+  th { color: var(--text-faint); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; }
+  td { font-family: var(--font-mono); font-size: 12px; }
+  td:first-child, th:first-child { font-family: var(--font-body); }
+  tbody tr { cursor: pointer; transition: background .15s; }
+  tbody tr:hover td { background: var(--panel-2); }
+  tbody tr.active td { background: var(--accent-soft); }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 600; font-family: var(--font-mono); letter-spacing: .02em;
+  }
+  .pill.geoformer { background: var(--accent-soft); color: var(--accent); }
+  .pill.baseline { background: var(--violet-soft); color: var(--violet); }
+  .pill.status-pending { background: #f5b8621a; color: var(--warn); }
+  .pill.status-processed { background: #3fd4831a; color: var(--good); }
+  .pill.status-failed { background: #ff6f6f1a; color: var(--bad); }
+
+  .flag { color: var(--bad); font-weight: 600; }
+  .ok { color: var(--good); font-weight: 600; }
+  .note { font-size: 12px; color: var(--text-faint); margin-top: 10px; line-height: 1.55; }
+  .note code { font-family: var(--font-mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+  /* ---------- chart ---------- */
+  .chart-wrap { position: relative; }
+  canvas { max-width: 100%; display: block; }
+  .legend-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--text-dim); }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 3px; }
+  #chartTooltip {
+    position: absolute; pointer-events: none; background: #0c1420ee; border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 11.5px; font-family: var(--font-mono);
+    box-shadow: 0 8px 24px -8px #000a; opacity: 0; transition: opacity .1s; white-space: nowrap;
+  }
+
+  /* ---------- dataset bars ---------- */
+  .aoi-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12.5px; }
+  .aoi-name { width: 110px; flex: none; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aoi-bar-track { flex: 1; height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+  .aoi-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--violet)); }
+  .aoi-count { width: 46px; flex: none; text-align: right; font-family: var(--font-mono); color: var(--text-faint); }
+
+  /* ---------- upload form ---------- */
+  form { display: flex; flex-direction: column; gap: 12px; }
+  .dropzone {
+    border: 1.5px dashed var(--border); border-radius: var(--radius-sm); padding: 14px;
+    background: var(--panel-2); transition: border-color .15s, background .15s; position: relative;
+  }
+  .dropzone:hover, .dropzone:focus-within { border-color: var(--accent); background: var(--accent-soft); }
+  .dropzone label { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+  .dropzone input[type=file] { color: var(--text-faint); font-size: 11.5px; max-width: 160px; }
+  .dropzone input[type=file]::file-selector-button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; font-size: 11px; font-family: var(--font-body); cursor: pointer; margin-right: 8px;
+  }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), #22b8ab); color: var(--accent-ink); border: none;
+    border-radius: var(--radius-sm); padding: 11px 16px; font-weight: 600; font-family: var(--font-display);
+    letter-spacing: .01em; cursor: pointer; transition: transform .12s, box-shadow .12s;
+    box-shadow: 0 6px 20px -8px #2fd8c980;
+  }
+  button.primary:hover { transform: translateY(-1px); box-shadow: 0 10px 24px -8px #2fd8c9a0; }
+  button.primary:active { transform: translateY(0); }
+  #sampleStatus { color: var(--text-dim); font-size: 12.5px; min-height: 1.2em; font-family: var(--font-mono); }
+
+  footer { text-align: center; color: var(--text-faint); font-size: 11.5px; padding-top: 18px; font-family: var(--font-mono); }
+
+  @media (max-width: 520px) {
+    .stat-value { font-size: 21px; }
+    header { padding-top: max(18px, env(safe-area-inset-top, 0px)); }
+  }
 </style>
 </head>
 <body>
-  <h1>Dual-Axis GeoFormer &mdash; Dashboard</h1>
-  <div class="sub">Every training run this project has produced, live from Neon Postgres, plus new-sample intake.</div>
+  <header>
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M3 12h4l2-7 4 14 2-7h6" stroke="#04211d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <h1>Dual-Axis GeoFormer</h1>
+        <div class="brand-sub">Training telemetry &amp; sample intake</div>
+      </div>
+    </div>
+    <div class="status-pill"><span class="status-dot pulse" id="liveDot"></span><span id="liveLabel">connecting&hellip;</span></div>
+  </header>
+
+  <div class="stat-row" id="statRow">
+    <div class="stat-tile"><div class="stat-label">Training runs</div><div class="stat-value" id="statRuns">&mdash;</div><div class="stat-hint">logged in Postgres</div></div>
+    <div class="stat-tile"><div class="stat-label">Best building F1</div><div class="stat-value accent" id="statBuilding">&mdash;</div><div class="stat-hint" id="statBuildingHint">&nbsp;</div></div>
+    <div class="stat-tile"><div class="stat-label">Best flooded F1</div><div class="stat-value violet" id="statFlooded">&mdash;</div><div class="stat-hint" id="statFloodedHint">&nbsp;</div></div>
+    <div class="stat-tile"><div class="stat-label">Dataset tiles</div><div class="stat-value" id="statTiles">&mdash;</div><div class="stat-hint">real SpaceNet-8</div></div>
+  </div>
 
   <div class="grid">
     <div class="card wide">
-      <h2>Training runs</h2>
-      <table id="runsTable">
-        <thead><tr><th>Run</th><th>Model</th><th>Data source</th><th>Epochs</th><th>Best val_loss</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="note" id="runsNote"></div>
+      <div class="card-head"><h2>Training runs</h2><span class="dim" id="runsNote"></span></div>
+      <div class="table-wrap">
+        <table id="runsTable">
+          <thead><tr><th>Run</th><th>Model</th><th>Data source</th><th>Epochs</th><th>Best val_loss</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card wide">
-      <h2 id="chartTitle">Per-class F1 over epochs &mdash; click a run above</h2>
-      <canvas id="f1Chart" height="90"></canvas>
+      <div class="card-head"><h2 id="chartTitle">Per-class F1 over epochs</h2></div>
+      <div class="chart-wrap">
+        <canvas id="f1Chart" height="240"></canvas>
+        <div id="chartTooltip"></div>
+      </div>
+      <div class="legend-row" id="legendRow"></div>
       <div class="note" id="coverageNote"></div>
     </div>
 
     <div class="card">
       <h2>Dataset</h2>
-      <div id="datasetStats">loading…</div>
+      <div id="datasetStats">loading&hellip;</div>
     </div>
 
     <div class="card">
-      <h2>Submit new sample (pre/post image pair)</h2>
+      <h2>Submit new sample</h2>
       <form id="sampleForm">
-        <label>Pre-event image<input type="file" name="pre" accept="image/*" required></label>
-        <label>Post-event image<input type="file" name="post" accept="image/*" required></label>
-        <button type="submit">Upload</button>
+        <div class="dropzone"><label>Pre-event image <input type="file" name="pre" accept="image/*" required></label></div>
+        <div class="dropzone"><label>Post-event image <input type="file" name="post" accept="image/*" required></label></div>
+        <button type="submit" class="primary">Upload pair</button>
       </form>
       <div id="sampleStatus"></div>
-      <div class="note">Saved as "pending" &mdash; run <code>python dashboard/process_samples.py</code> to run inference on it.</div>
+      <div class="note">Saved as <code>pending</code> &mdash; run <code>python dashboard/process_samples.py</code> to run inference.</div>
     </div>
 
     <div class="card wide">
-      <h2>Recent samples</h2>
-      <table id="samplesTable">
-        <thead><tr><th>ID</th><th>Status</th><th>Submitted</th><th>Result</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="card-head"><h2>Recent samples</h2></div>
+      <div class="table-wrap">
+        <table id="samplesTable">
+          <thead><tr><th>ID</th><th>Status</th><th>Submitted</th><th>Result</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div>
+
+  <footer>Dual-Axis GeoFormer &middot; local dashboard &middot; data from Neon Postgres + real_sn8_dataset_full</footer>
 
 <script>
 async function fetchJSON(url, opts) {
@@ -89,100 +267,189 @@ async function fetchJSON(url, opts) {
   return r.json();
 }
 
-function fmt(n, d=4) { return (n === null || n === undefined) ? '&mdash;' : Number(n).toFixed(d); }
+function fmt(n, d = 4) { return (n === null || n === undefined) ? '&mdash;' : Number(n).toFixed(d); }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+const SERIES = [
+  { key: 'f1_background', color: '#5b7ea8', label: 'background' },
+  { key: 'f1_building', color: '#ff6f6f', label: 'building' },
+  { key: 'f1_road', color: '#2fd8c9', label: 'road' },
+  { key: 'f1_flooded', color: '#f5b862', label: 'flooded' },
+];
+
+function setLive(ok) {
+  const dot = document.getElementById('liveDot'), label = document.getElementById('liveLabel');
+  dot.style.background = ok ? 'var(--good)' : 'var(--bad)';
+  dot.classList.toggle('pulse', ok);
+  label.textContent = ok ? 'live' : 'offline';
+}
 
 async function loadRuns() {
-  const runs = await fetchJSON('/api/runs');
+  let runs;
+  try {
+    runs = await fetchJSON('/api/runs');
+    setLive(true);
+  } catch (e) {
+    setLive(false);
+    document.getElementById('runsNote').textContent = 'Could not reach the API.';
+    return;
+  }
   const tbody = document.querySelector('#runsTable tbody');
   tbody.innerHTML = '';
   runs.forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.run_name}</td>
-      <td><span class="pill ${r.model_type}">${r.model_type}</span></td>
-      <td>${r.data_source || '&mdash;'}</td>
-      <td>${r.last_epoch ?? '&mdash;'} (${r.n_epochs} rows)</td>
+    tr.innerHTML = `<td>${esc(r.run_name)}</td>
+      <td><span class="pill ${r.model_type}">${esc(r.model_type)}</span></td>
+      <td>${esc(r.data_source) || '&mdash;'}</td>
+      <td>${r.last_epoch ?? '&mdash;'} <span style="color:var(--text-faint)">(${r.n_epochs})</span></td>
       <td>${fmt(r.best_val_loss)}</td>`;
-    tr.onclick = () => loadEpochs(r.id, r.run_name, r.notes);
+    tr.onclick = () => {
+      document.querySelectorAll('#runsTable tbody tr').forEach(x => x.classList.remove('active'));
+      tr.classList.add('active');
+      loadEpochs(r.id, r.run_name, r.notes);
+    };
     tbody.appendChild(tr);
   });
-  document.getElementById('runsNote').textContent = `${runs.length} run(s) loaded.`;
-  if (runs.length) loadEpochs(runs[runs.length - 1].id, runs[runs.length - 1].run_name, runs[runs.length - 1].notes);
+  document.getElementById('runsNote').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'}`;
+  document.getElementById('statRuns').textContent = runs.length;
+
+  // Best building/flooded F1 across every run's epochs, for the hero stats.
+  let bestBuilding = { v: -1, run: '' }, bestFlooded = { v: -1, run: '' };
+  await Promise.all(runs.map(async r => {
+    if (!r.n_epochs) return;
+    try {
+      const rows = await fetchJSON(`/api/runs/${r.id}/epochs`);
+      rows.forEach(row => {
+        if (row.f1_building > bestBuilding.v) bestBuilding = { v: row.f1_building, run: r.run_name, epoch: row.epoch };
+        if (row.f1_flooded > bestFlooded.v) bestFlooded = { v: row.f1_flooded, run: r.run_name, epoch: row.epoch };
+      });
+    } catch (e) { /* skip a run whose epochs 404 */ }
+  }));
+  if (bestBuilding.v >= 0) {
+    document.getElementById('statBuilding').textContent = bestBuilding.v.toFixed(3);
+    document.getElementById('statBuildingHint').textContent = `${bestBuilding.run}, epoch ${bestBuilding.epoch}`;
+  }
+  if (bestFlooded.v >= 0) {
+    document.getElementById('statFlooded').textContent = bestFlooded.v.toFixed(3);
+    document.getElementById('statFloodedHint').textContent = `${bestFlooded.run}, epoch ${bestFlooded.epoch}`;
+  }
+
+  if (runs.length) {
+    const rows = document.querySelectorAll('#runsTable tbody tr');
+    rows[rows.length - 1].classList.add('active');
+    loadEpochs(runs[runs.length - 1].id, runs[runs.length - 1].run_name, runs[runs.length - 1].notes);
+  }
 }
 
-let chart = null;
+let currentRows = [];
 async function loadEpochs(runId, runName, notes) {
   const rows = await fetchJSON(`/api/runs/${runId}/epochs`);
+  currentRows = rows;
   document.getElementById('chartTitle').textContent = `Per-class F1 over epochs — ${runName}`;
   const last = rows[rows.length - 1];
   const collapsed = [];
   if (last.pred_images_building === 0) collapsed.push('building');
   if (last.pred_images_flooded === 0) collapsed.push('flooded');
   document.getElementById('coverageNote').innerHTML =
-    (collapsed.length ? `<span class="flag">COLLAPSED classes (0 predicted images): ${collapsed.join(', ')}</span>` : '<span class="ok">No collapsed classes in the latest epoch.</span>')
-    + (notes ? `<br>${notes}` : '');
+    (collapsed.length ? `<span class="flag">&#9888; Collapsed (0 predicted images): ${collapsed.join(', ')}</span>` : '<span class="ok">&#10003; No collapsed classes at the latest epoch</span>')
+    + (notes ? `<br>${esc(notes)}` : '');
   drawChart(rows);
 }
 
+let chartGeom = null;
 function drawChart(rows) {
   const canvas = document.getElementById('f1Chart');
   const ctx = canvas.getContext('2d');
-  const w = canvas.width = canvas.clientWidth * 2;
-  const h = canvas.height = 220 * 2;
+  const dpr = 2;
+  const cssW = canvas.clientWidth || 600, cssH = 240;
+  const w = canvas.width = cssW * dpr, h = canvas.height = cssH * dpr;
   ctx.clearRect(0, 0, w, h);
-  const pad = 40 * 2;
+  const padL = 44 * dpr, padR = 14 * dpr, padT = 14 * dpr, padB = 30 * dpr;
   const xs = rows.map(r => r.epoch);
   const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const series = [
-    { key: 'f1_background', color: '#5fb0ff', label: 'background' },
-    { key: 'f1_building', color: '#ff6b6b', label: 'building' },
-    { key: 'f1_road', color: '#7ee0c3', label: 'road' },
-    { key: 'f1_flooded', color: '#ffb454', label: 'flooded' },
-  ];
-  // axes
-  ctx.strokeStyle = '#223252';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(pad, h - pad); ctx.lineTo(w - pad, h - pad);
-  ctx.moveTo(pad, pad); ctx.lineTo(pad, h - pad);
-  ctx.stroke();
-  ctx.fillStyle = '#93a3c2';
-  ctx.font = '20px sans-serif';
-  ctx.fillText('0.0', pad - 36, h - pad + 6);
-  ctx.fillText('1.0', pad - 36, pad + 6);
 
-  const xOf = e => pad + (maxX === minX ? 0 : (e - minX) / (maxX - minX)) * (w - 2 * pad);
-  const yOf = v => (h - pad) - (v ?? 0) * (h - 2 * pad);
+  const xOf = e => padL + (maxX === minX ? 0 : (e - minX) / (maxX - minX)) * (w - padL - padR);
+  const yOf = v => (h - padB) - (v ?? 0) * (h - padT - padB);
+  chartGeom = { xOf: null, yOf, minX, maxX, padL, padR, w, h, dpr, rows };
 
-  series.forEach(s => {
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = 3;
+  // horizontal gridlines + y labels
+  ctx.strokeStyle = '#16212f'; ctx.lineWidth = 1 * dpr;
+  ctx.fillStyle = '#5d7089'; ctx.font = `${11 * dpr}px 'JetBrains Mono', monospace`;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  [0, 0.25, 0.5, 0.75, 1.0].forEach(v => {
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillText(v.toFixed(2), padL - 8 * dpr, y);
+  });
+
+  // x labels (first/last epoch)
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(minX, xOf(minX), h - padB + 20 * dpr);
+  ctx.fillText(maxX, xOf(maxX), h - padB + 20 * dpr);
+
+  // smooth-ish lines (quadratic midpoints) per series
+  SERIES.forEach(s => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2.4 * dpr; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.beginPath();
     rows.forEach((r, i) => {
       const x = xOf(r.epoch), y = yOf(r[s.key]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      if (i === 0) { ctx.moveTo(x, y); return; }
+      const px = xOf(rows[i - 1].epoch), py = yOf(rows[i - 1][s.key]);
+      const mx = (px + x) / 2;
+      ctx.quadraticCurveTo(px, py, mx, (py + y) / 2);
+      ctx.lineTo(x, y);
     });
     ctx.stroke();
+    // endpoint dot
+    const lastRow = rows[rows.length - 1];
+    ctx.fillStyle = s.color;
+    ctx.beginPath(); ctx.arc(xOf(lastRow.epoch), yOf(lastRow[s.key]), 3.2 * dpr, 0, 7); ctx.fill();
   });
 
+  chartGeom.xOf = xOf;
+
   // legend
-  let lx = pad;
-  series.forEach(s => {
-    ctx.fillStyle = s.color;
-    ctx.fillRect(lx, 10, 16, 16);
-    ctx.fillStyle = '#e7edf7';
-    ctx.font = '20px sans-serif';
-    ctx.fillText(s.label, lx + 22, 24);
-    lx += ctx.measureText(s.label).width + 60;
+  const legend = document.getElementById('legendRow');
+  legend.innerHTML = SERIES.map(s => {
+    const v = rows[rows.length - 1][s.key];
+    return `<span class="legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${s.label} <b style="color:var(--text)">${v?.toFixed(3) ?? '—'}</b></span>`;
+  }).join('');
+}
+
+function initChartTooltip() {
+  const canvas = document.getElementById('f1Chart');
+  const tip = document.getElementById('chartTooltip');
+  canvas.addEventListener('mousemove', e => {
+    if (!chartGeom || !chartGeom.rows.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const epoch = Math.round(chartGeom.minX + relX * (chartGeom.maxX - chartGeom.minX));
+    const row = chartGeom.rows.reduce((a, b) => Math.abs(b.epoch - epoch) < Math.abs(a.epoch - epoch) ? b : a);
+    tip.style.opacity = 1;
+    tip.style.left = Math.min(e.clientX - rect.left + 12, rect.width - 150) + 'px';
+    tip.style.top = Math.max(e.clientY - rect.top - 70, 0) + 'px';
+    tip.innerHTML = `<b>epoch ${row.epoch}</b><br>` + SERIES.map(s =>
+      `<span style="color:${s.color}">${s.label}</span> ${row[s.key]?.toFixed(3) ?? '—'}`).join('<br>');
   });
+  canvas.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
 }
 
 async function loadDataset() {
   try {
     const d = await fetchJSON('/api/dataset');
-    const rows = Object.entries(d.by_aoi).map(([aoi, n]) => `<div>${aoi}: <b>${n}</b> tiles</div>`).join('');
-    document.getElementById('datasetStats').innerHTML = `<div>Total: <b>${d.total_tiles}</b> tiles</div>${rows}`;
+    document.getElementById('statTiles').textContent = d.total_tiles;
+    const max = Math.max(...Object.values(d.by_aoi));
+    const rows = Object.entries(d.by_aoi)
+      .sort((a, b) => b[1] - a[1])
+      .map(([aoi, n]) => `
+        <div class="aoi-row">
+          <div class="aoi-name" title="${esc(aoi)}">${esc(aoi)}</div>
+          <div class="aoi-bar-track"><div class="aoi-bar-fill" style="width:${(n / max * 100).toFixed(1)}%"></div></div>
+          <div class="aoi-count">${n}</div>
+        </div>`).join('');
+    document.getElementById('datasetStats').innerHTML = rows;
   } catch (e) {
-    document.getElementById('datasetStats').textContent = 'Dataset index not found locally.';
+    document.getElementById('datasetStats').innerHTML = '<span style="color:var(--text-faint)">Dataset index not found locally.</span>';
   }
 }
 
@@ -190,10 +457,19 @@ async function loadSamples() {
   const rows = await fetchJSON('/api/samples');
   const tbody = document.querySelector('#samplesTable tbody');
   tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-faint); font-family:var(--font-body)">No samples submitted yet.</td></tr>';
+    return;
+  }
   rows.forEach(r => {
     const tr = document.createElement('tr');
-    const result = r.result_json ? Object.entries(r.result_json.pixel_counts || {}).filter(([,n]) => n > 0).map(([k]) => k).join(', ') : (r.error_message || '&mdash;');
-    tr.innerHTML = `<td>${r.id}</td><td>${r.status}</td><td>${new Date(r.submitted_at).toLocaleString()}</td><td>${result}</td>`;
+    const result = r.result_json
+      ? (Object.entries(r.result_json.pixel_counts || {}).filter(([, n]) => n > 0).map(([k]) => k).join(', ') || 'background only')
+      : (esc(r.error_message) || '&mdash;');
+    tr.innerHTML = `<td>#${r.id}</td>
+      <td><span class="pill status-${esc(r.status)}">${esc(r.status)}</span></td>
+      <td>${new Date(r.submitted_at).toLocaleString()}</td>
+      <td>${result}</td>`;
     tbody.appendChild(tr);
   });
 }
@@ -201,16 +477,23 @@ async function loadSamples() {
 document.getElementById('sampleForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const btn = e.target.querySelector('button');
+  btn.disabled = true;
   document.getElementById('sampleStatus').textContent = 'Uploading…';
   try {
     const res = await fetchJSON('/api/samples', { method: 'POST', body: fd });
-    document.getElementById('sampleStatus').textContent = `Saved as sample #${res.sample_id} (pending).`;
+    document.getElementById('sampleStatus').innerHTML = `<span class="ok">&#10003;</span> Saved as sample #${res.sample_id} (pending).`;
+    e.target.reset();
     loadSamples();
   } catch (err) {
-    document.getElementById('sampleStatus').textContent = 'Upload failed: ' + err.message;
+    document.getElementById('sampleStatus').innerHTML = `<span class="flag">Upload failed:</span> ${esc(err.message)}`;
+  } finally {
+    btn.disabled = false;
   }
 });
 
+initChartTooltip();
+window.addEventListener('resize', () => { if (currentRows.length) drawChart(currentRows); });
 loadRuns();
 loadDataset();
 loadSamples();

@@ -258,6 +258,13 @@ def main():
                          "more often per epoch than their raw prevalence. Targets the "
                          "building/flooded total-collapse finding in docs/MANUAL.md S12.3-S13 "
                          "-- val stays unweighted so evaluation numbers stay honest.")
+    p.add_argument("--freeze-backbone-epochs", type=int, default=0,
+                    help="geoformer + --pretrained-backbone only: freeze the pretrained backbone's "
+                         "weights for this many epochs before unfreezing. Standard transfer-learning "
+                         "practice -- less backward-pass compute and activation memory while frozen "
+                         "(the backbone runs under torch.no_grad()), and protects the pretrained "
+                         "ImageNet features from early, noisy gradients from an untrained decoder/head. "
+                         "0 (default) never freezes -- exact prior behavior.")
     p.add_argument("--pretrained-backbone", type=str, default=None,
                     help="geoformer only: an ImageNet-pretrained timm model name (e.g. "
                          "'efficientnet_b0') supporting features_only=True at strides "
@@ -399,6 +406,15 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
         model.train()
+        # model.train() above puts every submodule (including the backbone)
+        # back into train() mode -- re-apply the freeze state (which also
+        # forces the backbone specifically back to eval()) every epoch,
+        # not just once, or an epoch boundary would silently undo it.
+        if args.model == "geoformer" and args.pretrained_backbone:
+            should_freeze = epoch < args.freeze_backbone_epochs
+            if epoch == start_epoch or should_freeze != (epoch - 1 < args.freeze_backbone_epochs):
+                print(f"Backbone {'frozen' if should_freeze else 'unfrozen'} (epoch {epoch + 1})")
+            model.encoder.set_backbone_frozen(should_freeze)
         train_loss_sum, n_batches = 0.0, 0
         for pre, post, mask in train_loader:
             pre, post, mask = pre.to(device), post.to(device), mask.to(device)

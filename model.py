@@ -315,11 +315,33 @@ class SiameseMaxViTEncoder(nn.Module):
                         use_grid_attention=cfg.use_grid_attention)
             for i in range(len(cfg.stage_dims))
         ])
+        self._backbone_frozen = False
+
+    def set_backbone_frozen(self, frozen: bool) -> None:
+        """Freeze/unfreeze the pretrained backbone -- standard transfer-
+        learning practice, and a real efficiency lever: forward() then
+        runs the backbone under torch.no_grad() (skips building its
+        backward graph entirely -- less compute AND less activation
+        memory, not merely "the optimizer won't step these"), and puts
+        it in eval() mode so BatchNorm running stats stop drifting on
+        data this training run may see in a different distribution than
+        ImageNet did. No-op if there's no backbone (from-scratch path).
+        """
+        if not self.pretrained_backbone_name:
+            return
+        self._backbone_frozen = frozen
+        for p in self.backbone.parameters():
+            p.requires_grad = not frozen
+        self.backbone.train(not frozen)
 
     def forward(self, x: torch.Tensor):
         feats, saliencies = [], []
         if self.pretrained_backbone_name:
-            backbone_feats = self.backbone(x)
+            if self._backbone_frozen:
+                with torch.no_grad():
+                    backbone_feats = self.backbone(x)
+            else:
+                backbone_feats = self.backbone(x)
             for proj, bf, stage in zip(self.projections, backbone_feats, self.stages):
                 f, sal = stage(proj(bf))
                 feats.append(f)

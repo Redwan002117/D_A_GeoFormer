@@ -127,6 +127,59 @@ def test_pretrained_backbone_none_is_unaffected():
     assert not hasattr(model.encoder, "backbone")
 
 
+def _tiny_pretrained_config() -> GeoFormerConfig:
+    return GeoFormerConfig(
+        stage_dims=(8, 16, 24, 32), stage_windows=(4, 4, 2, 2), stage_grids=(4, 2, 2, 1),
+        num_heads=2, num_classes=4, pretrained_backbone="efficientnet_b0", pretrained=False,
+    )
+
+
+def test_freeze_backbone_stops_gradients_and_saves_compute():
+    """set_backbone_frozen(True) must (a) zero out requires_grad on every
+    backbone param, so the optimizer never touches them, and (b) actually
+    produce no .grad after backward -- not just flip a flag that forward()
+    ignores."""
+    import pytest
+    pytest.importorskip("timm")
+    model = DualAxisGeoFormer(_tiny_pretrained_config())
+    model.train()
+    model.encoder.set_backbone_frozen(True)
+    assert all(not p.requires_grad for p in model.encoder.backbone.parameters())
+    assert not model.encoder.backbone.training  # BatchNorm stats must stop drifting too
+
+    pre = torch.randn(1, 3, 64, 64)
+    post = torch.randn(1, 3, 64, 64)
+    out = model(pre, post)
+    out["logits"].sum().backward()
+    assert all(p.grad is None for p in model.encoder.backbone.parameters())
+    # the rest of the model must still train normally while the backbone is frozen
+    assert any(p.grad is not None for p in model.encoder.projections.parameters())
+
+
+def test_unfreeze_backbone_restores_gradient_flow():
+    import pytest
+    pytest.importorskip("timm")
+    model = DualAxisGeoFormer(_tiny_pretrained_config())
+    model.train()
+    model.encoder.set_backbone_frozen(True)
+    model.encoder.set_backbone_frozen(False)
+    assert all(p.requires_grad for p in model.encoder.backbone.parameters())
+    assert model.encoder.backbone.training
+
+    pre = torch.randn(1, 3, 64, 64)
+    post = torch.randn(1, 3, 64, 64)
+    out = model(pre, post)
+    out["logits"].sum().backward()
+    assert any(p.grad is not None for p in model.encoder.backbone.parameters())
+
+
+def test_set_backbone_frozen_is_noop_without_a_backbone():
+    """The from-scratch path has no .backbone attribute at all -- calling
+    set_backbone_frozen must not crash, just do nothing."""
+    model = DualAxisGeoFormer(_tiny_config())
+    model.encoder.set_backbone_frozen(True)  # must not raise
+
+
 if __name__ == "__main__":
     test_forward_pass_output_shape()
     test_forward_pass_batch_size_greater_than_one()
@@ -134,4 +187,7 @@ if __name__ == "__main__":
     test_grid_attention_saliency_matches_batch_dimension()
     test_pretrained_backbone_wiring_produces_correct_shapes()
     test_pretrained_backbone_none_is_unaffected()
+    test_freeze_backbone_stops_gradients_and_saves_compute()
+    test_unfreeze_backbone_restores_gradient_flow()
+    test_set_backbone_frozen_is_noop_without_a_backbone()
     print("All tests passed.")
