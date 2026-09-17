@@ -143,11 +143,23 @@ def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
         train_idx, val_idx = full.split(val_fraction=0.1)
         train_ds = torch.utils.data.Subset(full, train_idx)
         val_ds = torch.utils.data.Subset(full, val_idx)
+
+        if args.oversample_rare_classes:
+            weights = full.class_presence_weights(train_idx)
+            sampler = torch.utils.data.WeightedRandomSampler(
+                weights, num_samples=len(train_idx), replacement=True
+            )
+            n_building = sum(1 for w in weights if w > 1.0)
+            print(f"Oversampling rare classes: {n_building}/{len(train_idx)} train tiles "
+                  f"contain building/flooded pixels and are drawn more often per epoch")
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, num_workers=0)
+        else:
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     else:
         train_ds = SyntheticFloodDataset(length=args.synthetic_train_size, image_size=args.image_size, base_seed=0)
         val_ds = SyntheticFloodDataset(length=args.synthetic_val_size, image_size=args.image_size, base_seed=100_000)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
     return train_loader, val_loader
 
@@ -178,6 +190,12 @@ def main():
                     help="Ablation (geoformer only): disable grid (global) attention, "
                          "keeping only block (local) attention. Table 2's 'GeoFormer "
                          "- grid attention' row.")
+    p.add_argument("--oversample-rare-classes", action="store_true",
+                    help="Real data only (--data-dir): use a WeightedRandomSampler over the "
+                         "TRAIN split so tiles containing building/flooded pixels are drawn "
+                         "more often per epoch than their raw prevalence. Targets the "
+                         "building/flooded total-collapse finding in docs/MANUAL.md S12.3-S13 "
+                         "-- val stays unweighted so evaluation numbers stay honest.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)

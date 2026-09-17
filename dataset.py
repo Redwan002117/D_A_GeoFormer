@@ -191,6 +191,39 @@ class SpaceNet8Dataset(Dataset):
                 train_indices.append(i)
         return train_indices, val_indices
 
+    def class_presence_weights(self, indices: list[int],
+                                boost_building: float = 4.0, boost_flooded: float = 6.0) -> list[float]:
+        """Per-index sampling weight for a WeightedRandomSampler: tiles that
+        contain building and/or flooded pixels get boosted, so those tiles
+        appear more often per epoch than their raw prevalence in `indices`.
+
+        WHY: this project's own real-data runs show `building`/`flooded`
+        F1 stuck at exactly 0.000 with zero predicted-in images across every
+        checkpoint tried (see docs/MANUAL.md S12.3-S12.5) while `road`
+        (present in nearly every tile) shows real, climbing F1. Tversky's
+        alpha/beta alone reweight the LOSS per-pixel; they do nothing about
+        how often a tile containing those classes is even SEEN during an
+        epoch, and `flooded` in particular covers well under a tenth of a
+        percent of pixels dataset-wide. This is docs/MANUAL.md S13's
+        "weighted/oversampled DataLoader" recommendation, made concrete.
+
+        `indices` should be a TRAIN split's indices only (e.g. from
+        `.split()[0]`) -- val must keep sampling its true, unweighted
+        real-world distribution so evaluation numbers stay honest.
+        """
+        weights = []
+        for i in indices:
+            counts = self.entries[i].get("class_pixel_counts", {})
+            has_building = counts.get("1", 0) > 0
+            has_flooded = counts.get("3", 0) > 0
+            w = 1.0
+            if has_building:
+                w *= boost_building
+            if has_flooded:
+                w *= boost_flooded
+            weights.append(w)
+        return weights
+
 
 if __name__ == "__main__":
     ds = SyntheticFloodDataset(length=4, image_size=64)

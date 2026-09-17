@@ -11,13 +11,17 @@ import pytest
 from dataset import SpaceNet8Dataset, SyntheticFloodDataset
 
 
-def _make_fake_index(tmp_path, tile_ids):
-    """A SpaceNet8Dataset with just enough on disk for .split() to work --
-    split() only reads index.json's tile_id field, never opens an image."""
-    (tmp_path / "index.json").write_text(json.dumps([
-        {"tile_id": tid, "pre": f"pre/{tid}.png", "post": f"post/{tid}.png", "mask": f"mask/{tid}.png"}
-        for tid in tile_ids
-    ]))
+def _make_fake_index(tmp_path, tile_ids, class_pixel_counts=None):
+    """A SpaceNet8Dataset with just enough on disk for .split() (and
+    .class_presence_weights()) to work -- neither reads actual image files,
+    only index.json fields."""
+    entries = []
+    for i, tid in enumerate(tile_ids):
+        entry = {"tile_id": tid, "pre": f"pre/{tid}.png", "post": f"post/{tid}.png", "mask": f"mask/{tid}.png"}
+        if class_pixel_counts is not None:
+            entry["class_pixel_counts"] = class_pixel_counts[i]
+        entries.append(entry)
+    (tmp_path / "index.json").write_text(json.dumps(entries))
     return SpaceNet8Dataset(str(tmp_path))
 
 
@@ -84,6 +88,30 @@ def test_split_assignment_is_stable_when_the_dataset_grows(tmp_path):
     assert val_ids_small == val_ids_grown_from_original, (
         "a tile's train/val assignment must not change just because the dataset grew"
     )
+
+
+def test_class_presence_weights_boosts_rare_classes(tmp_path):
+    # tile_0: nothing rare. tile_1: building only. tile_2: flooded only. tile_3: both.
+    counts = [
+        {"0": 1000, "1": 0, "2": 0, "3": 0},
+        {"0": 900, "1": 100, "2": 0, "3": 0},
+        {"0": 900, "1": 0, "2": 0, "3": 100},
+        {"0": 800, "1": 100, "2": 0, "3": 100},
+    ]
+    ds = _make_fake_index(tmp_path, [f"tile_{i}" for i in range(4)], class_pixel_counts=counts)
+    weights = ds.class_presence_weights([0, 1, 2, 3], boost_building=4.0, boost_flooded=6.0)
+    assert weights[0] == 1.0
+    assert weights[1] == 4.0
+    assert weights[2] == 6.0
+    assert weights[3] == 24.0  # both boosts multiply
+
+
+def test_class_presence_weights_only_covers_requested_indices(tmp_path):
+    counts = [{"0": 1000, "1": 0, "2": 0, "3": 0}, {"0": 900, "1": 100, "2": 0, "3": 0}]
+    ds = _make_fake_index(tmp_path, ["tile_0", "tile_1"], class_pixel_counts=counts)
+    weights = ds.class_presence_weights([1])  # only tile_1, a building tile
+    assert len(weights) == 1
+    assert weights[0] == 4.0  # default boost_building
 
 
 if __name__ == "__main__":
