@@ -915,7 +915,54 @@ survive continued training -- still consistent with the S12.10 synthesis
 that a single joint 4-way softmax makes every foreground class compete
 for the same probability mass, and now with additional evidence that
 better features raise the PEAK before the collapse rather than preventing
-it. Training continues; this table will be updated as it does.
+it. Training continues, and building/flooded stayed at exactly 0.000
+through epoch 10 (`road` also degraded there, F1 0.171, coverage 49/87 --
+possibly the start of a further slide, not yet confirmed as one).
+
+### 12.12 `best.pt` was tracking the wrong thing this whole time -- a real, costly bug
+
+Checking `checkpoints/best.pt` directly (asked to "fine tune the model
+for best output results") found it holds **epoch 5** -- a fully
+COLLAPSED checkpoint (`building` F1 0.000, `flooded` F1 0.000). Epoch 2
+-- `building` F1 0.491, `flooded` F1 0.144, both with genuine per-image
+coverage, this project's actual best real-data result -- was never saved
+as "best" and its weights are now gone (overwritten by `last.pt`'s
+continued progress, with no milestone at epoch 2 since
+`--checkpoint-every 10` only lands on multiples of 10).
+
+**Root cause**: `best.pt` is selected by lowest `val_loss`, and Tversky
+loss is dominated by whichever classes have the most pixels
+(`background`, then `road`). A checkpoint that stops predicting
+`building`/`flooded` at all can have a LOWER val_loss than one that
+predicts them imperfectly but for real:
+
+| epoch | val_loss | building F1 | flooded F1 | selected as "best" by val_loss? |
+|---|---|---|---|---|
+| 2 | 0.686 | 0.491 | 0.144 | no |
+| 5 | 0.370 | 0.000 | 0.000 | **yes** |
+
+So the checkpoint-selection logic was actively working against the
+project's actual goal the entire time -- not just on this run.
+`checkpoints_baseline/`'s "best" and every prior GeoFormer run's "best"
+inherit the same risk; they simply weren't checked this closely before.
+
+**Fixed**: `train.py --checkpoint-metric {val_loss, mean_f1, min_f1}`
+(default `val_loss`, exact prior behavior -- existing docs/callers see no
+change unless they opt in). `mean_f1` maximizes the average F1 across
+classes seen so far; `min_f1` maximizes the WORST class's F1 -- the
+strictest choice, since a checkpoint can't be "best" while any seen class
+is still at exactly 0. `checkpoint_score()` is a pure function (lower
+always better, regardless of metric) with 6 new regression tests,
+including one that reproduces this exact epoch-2-vs-epoch-5 scenario
+numerically and asserts `mean_f1` would have chosen epoch 2.
+
+Training restarted a sixth time (`training_log_geoformer_801_v6.csv`)
+with the same config as v5 (pretrained backbone, oversampling, class
+weights) plus `--checkpoint-metric min_f1` -- from epoch 0, not resumed,
+since epoch 10's state (still collapsed, `road` also degrading) isn't a
+useful base and the actually-useful epoch-2 state is unrecoverable. This
+was a cheap restart to make, not a wasted one: the good result appeared
+in the first 2 epochs last time, not after 100+.
 
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
