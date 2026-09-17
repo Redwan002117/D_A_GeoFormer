@@ -1322,7 +1322,40 @@ training could still reveal a later collapse or a different failure
 mode. Monitoring continues through at least epoch 6-10 before this
 result is called anything stronger than "the fix is working so far."
 
-## 13. Bottlenecks, honestly, and how to actually overcome each one
+### 12.20 Epochs 4-5: F1 collapse still hasn't happened, but a slower, different warning sign has appeared
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage (of 87 val images) |
+|---|---|---|---|---|
+| 3 | 0.529 | 0.385 | 0.383 | 61/87 |
+| 4 | 0.523 | 0.351 | **0.396** (new project-best) | 36/87 |
+| 5 | 0.561 | 0.392 | 0.250 | 33/87 |
+
+**The good news, unchanged**: building F1 keeps climbing (0.529 ->
+0.523 -> 0.561, essentially flat-to-rising, not the sharp drop to 0.000
+every prior run showed here) and flooded F1 stayed well above zero
+through epoch 5 -- the collapse mechanism from S12.17 genuinely has not
+recurred in its original form.
+
+**A real, separate concern, reported honestly rather than glossed
+over**: `flooded` *coverage* -- the number of validation images where
+the model predicts flooded pixels at all -- has fallen every single
+epoch: 73 -> 70 -> 61 -> 36 -> 33 out of 87. F1 is computed only over
+images where the class is predicted or present, so a high F1 on a
+shrinking set of images is compatible with the model quietly narrowing
+*where* it's willing to predict flooded, even while staying accurate
+when it does. This is a genuinely different mechanism from S12.17's
+finding (a total probability collapse across every pixel) -- here the
+per-pixel signal within a prediction is fine, but the model is
+predicting flooded in fewer images epoch over epoch. Worth naming
+plainly: this could be (a) benign -- the model correctly learning that
+fewer validation tiles actually contain real flooding as it stops
+over-predicting early on, which oversampling and class weighting can
+induce transiently, or (b) an early, slower version of the same
+representational crowding-out S12.17 diagnosed, just acting on
+*which images* trigger any flooded prediction instead of collapsing
+the probability everywhere at once. Not distinguishable from 5 epochs
+alone -- continuing to monitor whether coverage keeps falling toward 0
+(pointing to (b)) or stabilizes (pointing to (a)).
 
 Four real bottlenecks were hit while building this, in this environment
 (Windows, CPU-only, ~16GB RAM, shared with a browser and other apps). Each
