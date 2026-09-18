@@ -32,7 +32,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
-from losses import TverskyLoss
+from losses import TverskyLoss, AsymmetricUnifiedFocalLoss, RegionMutualInformationLoss, TopKLoss
 from model import DualAxisGeoFormer, GeoFormerConfig
 from baseline import SN8Baseline
 from db.db_logger import DBLogger
@@ -420,6 +420,34 @@ def main():
                          "also literally what the SpaceNet-8 competition's own 5th-place "
                          "solution used for its flood head (`1*dice + 1*bce`) -- a weight of "
                          "1.0 matches their convention.")
+    p.add_argument("--flood-loss-fn", choices=["tversky", "unified_focal"], default="tversky",
+                    help="--separate-flood-head only: which loss computes the flood head's "
+                         "primary term. 'tversky' (default) is exact prior behavior -- "
+                         "TverskyLoss with --flood-tversky-beta. 'unified_focal' swaps in "
+                         "AsymmetricUnifiedFocalLoss (Yeung et al. 2022, docs/RESEARCH_NOTES.md "
+                         "item 4) instead -- a compound loss purpose-built for severe class "
+                         "imbalance that treats the foreground/minority class and the background "
+                         "class asymmetrically throughout, rather than applying the same focal "
+                         "down-weighting to both the way --focal-gamma does.")
+    p.add_argument("--flood-rmi-weight", type=float, default=None,
+                    help="--separate-flood-head only: adds `weight * RegionMutualInformationLoss` "
+                         "to the flood loss, alongside the primary --flood-loss-fn term. None "
+                         "(default) disables it -- exact prior behavior. This is the actual flood "
+                         "loss the SpaceNet-8 challenge's 1st-place team used (docs/RESEARCH_NOTES.md "
+                         "item 3) -- unlike every other loss here, which scores each pixel "
+                         "independently, RMI scores local NEIGHBORHOODS, rewarding a prediction "
+                         "that gets the flood boundary's SHAPE right, not just its pixel count.")
+    p.add_argument("--flood-topk-weight", type=float, default=None,
+                    help="--separate-flood-head only: adds `weight * TopKLoss` (BCE computed only "
+                         "on the hardest --flood-topk-fraction of pixels) to the flood loss. None "
+                         "(default) disables it -- exact prior behavior. A different lever from "
+                         "every other flood loss term: those change how much each pixel's error "
+                         "counts, this changes which pixels get to contribute a gradient at all "
+                         "(docs/RESEARCH_NOTES.md item 6).")
+    p.add_argument("--flood-topk-fraction", type=float, default=0.15,
+                    help="--flood-topk-weight only: fraction of pixels (by hardest per-pixel BCE) "
+                         "that contribute to the TopK term. Default 0.15, unused unless "
+                         "--flood-topk-weight is set.")
     p.add_argument("--ema-momentum", type=float, default=None,
                     help="Exponential moving average of model weights: after every optimizer "
                          "step, ema = ema * (1 - momentum) + raw_weights * momentum. The EMA "
@@ -518,6 +546,8 @@ def main():
         print(f"Focal Tversky gamma={args.focal_gamma} (concentrates loss on still-hard pixels within each class)")
 
     flood_loss_fn = None
+    flood_rmi_fn = None
+    flood_topk_fn = None
     if args.separate_flood_head:
         structure_weights = class_weights[:3] if class_weights else None
         flood_class_weight = args.flood_class_weight
@@ -525,12 +555,22 @@ def main():
             flood_class_weight = class_weights[3] if class_weights else 1.0
         flood_beta = args.flood_tversky_beta if args.flood_tversky_beta is not None else args.tversky_beta
         bce_note = f" + {args.flood_bce_weight}*BCE" if args.flood_bce_weight is not None else ""
-        print(f"Flood loss: class_weight=[1.0, {flood_class_weight}] beta={flood_beta}{bce_note} "
+        rmi_note = f" + {args.flood_rmi_weight}*RMI" if args.flood_rmi_weight is not None else ""
+        topk_note = f" + {args.flood_topk_weight}*TopK({args.flood_topk_fraction})" if args.flood_topk_weight is not None else ""
+        print(f"Flood loss [{args.flood_loss_fn}]: class_weight=[1.0, {flood_class_weight}] "
+              f"beta={flood_beta}{bce_note}{rmi_note}{topk_note} "
               f"(independent of the structure loss's alpha={args.tversky_alpha}/beta={args.tversky_beta})")
         loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=3,
                                class_weights=structure_weights, focal_gamma=args.focal_gamma)
-        flood_loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=flood_beta, num_classes=2,
-                                     class_weights=[1.0, flood_class_weight], focal_gamma=args.focal_gamma)
+        if args.flood_loss_fn == "unified_focal":
+            flood_loss_fn = AsymmetricUnifiedFocalLoss(delta=flood_beta)
+        else:
+            flood_loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=flood_beta, num_classes=2,
+                                         class_weights=[1.0, flood_class_weight], focal_gamma=args.focal_gamma)
+        if args.flood_rmi_weight is not None:
+            flood_rmi_fn = RegionMutualInformationLoss(num_classes=2)
+        if args.flood_topk_weight is not None:
+            flood_topk_fn = TopKLoss(top_k_fraction=args.flood_topk_fraction)
     else:
         loss_fn = TverskyLoss(alpha=args.tversky_alpha, beta=args.tversky_beta, num_classes=NUM_CLASSES,
                                class_weights=class_weights, focal_gamma=args.focal_gamma)
@@ -556,6 +596,10 @@ def main():
             # -- see --flood-bce-weight's own help text for the full rationale.
             bce = F.binary_cross_entropy_with_logits(out["flood_logit"], flood_target.unsqueeze(1).float())
             flood_loss = flood_loss + args.flood_bce_weight * bce
+        if flood_rmi_fn is not None:
+            flood_loss = flood_loss + args.flood_rmi_weight * flood_rmi_fn(flood_logits_2ch, flood_target)
+        if flood_topk_fn is not None:
+            flood_loss = flood_loss + args.flood_topk_weight * flood_topk_fn(out["flood_logit"], flood_target)
         return structure_loss + flood_loss
 
     start_epoch = 0

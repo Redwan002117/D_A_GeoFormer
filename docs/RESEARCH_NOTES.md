@@ -1,12 +1,28 @@
 # Research Notes: Candidate Next Steps for Flood Detection
 
-**Status: research only, nothing here is implemented.** This is a literature/
-competition-solution review done to find evidence-based next steps for the
-flood-detection plateau (docs/MANUAL.md S12.44-S12.45), not a to-do list
-committed to yet. Every item below is cross-checked against what this
-project has ALREADY tried (per MANUAL.md's history) so nothing here
-duplicates existing work. Sources are linked; nothing is taken on faith from
-a single blog post.
+**Update (docs/MANUAL.md S12.46): items 3, 4, and 6 are now implemented,
+tested code** (`losses.py`'s `RegionMutualInformationLoss`,
+`AsymmetricUnifiedFocalLoss`, `TopKLoss`, wired into `train.py` as opt-in
+flags), not just research anymore -- what's still missing is a real
+training run using them. Their sections below are left as originally
+written (the reasoning is still the reasoning); S12.46 has the
+implementation details.
+
+**Also found since this was first written**: `github.com/
+SpaceNetChallenge/SpaceNet8` (the official challenge repo) contains the
+actual submitted code for all five top-placing teams, not just the
+5th-place writeup already cited below -- including 1st place (KARI-AI /
+`01-ohhan777`), which the original web search for this document could not
+locate. That's where item 3's RMI loss defaults were confirmed as the
+actual winning hyperparameters, not estimates.
+
+**Status of the remaining items (1, 2, 5, 7, 8): still research only,
+nothing implemented.** This started as a literature/competition-solution
+review to find evidence-based next steps for the flood-detection plateau
+(docs/MANUAL.md S12.44-S12.45), not a to-do list committed to all at once.
+Every item is cross-checked against what this project has ALREADY tried
+(per MANUAL.md's history) so nothing here duplicates existing work. Sources
+are linked; nothing is taken on faith from a single blog post.
 
 **The actual bottleneck, restated plainly**: flooded pixels are under 1% of
 the 801-tile real dataset, with only ~20-28 of 87 validation tiles
@@ -75,6 +91,12 @@ choices — this specific technique from the same source was not adopted).
 ## Tier 2 — proven in the exact SpaceNet-8 domain, moderate effort
 
 ### 3. RMI (Region Mutual Information) loss instead of/alongside Tversky+BCE
+**[IMPLEMENTED, S12.46]** `losses.py`'s `RegionMutualInformationLoss`, opt-in
+via `--flood-rmi-weight`. Confirmed directly in the 1st-place team's own
+code (`github.com/SpaceNetChallenge/SpaceNet8/01-ohhan777`, found after
+this note was first written) that RMI was their actual flood loss, not
+just referenced by a secondary paper -- see below.
+
 The SOTA SpaceNet-8 result found in this search (arXiv 2404.18235) used a
 **Siamese HRNet+OCR model with RMI loss**, not a Dice/Tversky/BCE
 combination. RMI's actual mechanism (NeurIPS 2019) is meaningfully
@@ -95,6 +117,9 @@ Sources: [RMI paper (NeurIPS 2019)](https://arxiv.org/abs/1910.12037),
 mislabeled tiles** — see item 5 below, same source).
 
 ### 4. Unified Focal Loss
+**[IMPLEMENTED, S12.46]** `losses.py`'s `AsymmetricUnifiedFocalLoss`,
+opt-in via `--flood-loss-fn unified_focal`.
+
 A 2021 loss (Yeung et al., cited widely, existing PyTorch port available)
 that generalises Focal + Focal Tversky into one framework specifically
 built for severe class imbalance, explicitly reducing the number of
@@ -129,6 +154,9 @@ Source: [arXiv 2404.18235](https://arxiv.org/html/2404.18235v1)
 ## Tier 3 — smaller, proven, low-effort
 
 ### 6. TopK loss (hard-pixel mining)
+**[IMPLEMENTED, S12.46]** `losses.py`'s `TopKLoss`, opt-in via
+`--flood-topk-weight` / `--flood-topk-fraction`.
+
 Selects only the hardest-to-classify pixels for backpropagation each step.
 Flagged by the same 2023 loss survey as a distinct imbalance strategy from
 Focal/Tversky-family losses (it changes *which pixels contribute gradient*,
@@ -164,11 +192,19 @@ Source: [motokimura/spacenet8_solution_5th-place](https://github.com/motokimura/
 
 ---
 
-## What this search did NOT find
+## What this search did NOT find (originally)
 
-- No first-place (KARI-AI) team code repository — only a secondary summary
-  of their approach. Their specific architecture/loss choices are not
-  independently confirmed here.
+- ~~No first-place (KARI-AI) team code repository~~ **Found since**:
+  `github.com/SpaceNetChallenge/SpaceNet8/01-ohhan777` is their actual
+  submitted code — HRNet-W48+OCR, `RMILoss(num_classes=5)` for flood
+  specifically (a 5-class target combining building/road/flood into one
+  space, not a separate binary flood head like this project's
+  architecture), deep supervision with `[0.4, 1.0]` auxiliary/main output
+  weights, and task-level loss weighting `0.6*building + 0.4*road +
+  0.4*flood`. The official repo (`github.com/SpaceNetChallenge/SpaceNet8`)
+  turns out to contain all five top teams' code, not just the baseline —
+  worth checking `02_number13`, `03-sianalytics`, `04-ZABURO` too if this
+  gets revisited.
 - The Flood-MATE paper (item 1's closest analog) is paywalled; its
   reported numbers were not verified, only its existence and general
   approach.

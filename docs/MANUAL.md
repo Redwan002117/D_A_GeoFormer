@@ -2428,6 +2428,59 @@ improvement (epoch 74's peak) more often than it protected anything the
 available, for a future run where a much longer patience is deliberately
 wanted for a specific reason.
 
+### S12.46 -- three new flood-loss options, ported from the actual SpaceNet-8
+top-5 solutions' code, opt-in and untested-in-a-real-run
+
+`docs/RESEARCH_NOTES.md` items 3, 4, and 6 (RMI loss, Unified Focal loss,
+TopK hard-pixel mining) are now real, tested code -- `losses.py`'s
+`RegionMutualInformationLoss`, `AsymmetricUnifiedFocalLoss`, and `TopKLoss`
+-- wired into `train.py` as three new opt-in flags: `--flood-loss-fn
+unified_focal` (replaces the primary flood Tversky term), `--flood-rmi-
+weight` and `--flood-topk-weight` (additive, same pattern as the existing
+`--flood-bce-weight`). None of the three change any existing default --
+v15 (S12.45) keeps running with none of them set.
+
+**Where these actually came from**: `github.com/SpaceNetChallenge/SpaceNet8`
+(the official challenge repo, already cited here as the baseline source)
+turns out to contain the actual top-5 teams' full submitted code, not just
+the 5th-place writeup this project had already reviewed --
+`01-ohhan777/code` is the 1st-place team's (KARI-AI) real training code.
+Their `loss/sn8_loss.py` confirms flood detection was scored with
+`RMILoss(num_classes=5)`, and their `flags.txt` leaves every RMI
+hyperparameter at the class's own default -- so this port's defaults
+(`radius=3, pool_size=4`) are the actual winning values, not guesses.
+
+**RMI was NOT copied verbatim** -- the reference (`loss/rmi.py`) hardcodes
+`.type(torch.cuda.DoubleTensor)`, which is a hard crash on this project's
+CPU-only environment (S13's own documented bottleneck), and bundles its own
+internal BCE-mixing that would have duplicated this project's existing
+`--flood-bce-weight`. `RegionMutualInformationLoss` keeps the actual novel
+math (the region-neighborhood covariance / Cholesky log-det computation)
+faithful and tested against it, fixes the CPU portability issue with
+device-agnostic `.double()`, drops the reference's unused multi-class/
+alternate-pooling generality this project never needs, and leaves BCE
+mixing to the code that already does it. `AsymmetricUnifiedFocalLoss` is
+ported from `oikosohn/compound-loss-pytorch` (a from-scratch PyTorch port
+of the paper's own TF code, checked line-for-line, not re-derived from the
+paper's text) with one documented numerical-safety addition: a clamp
+preventing the foreground focal term's `x ** -gamma` from producing inf on
+a near-perfect batch, which the reference doesn't guard against.
+
+**Verification, not just unit tests**: beyond the 14 new tests in
+`tests/test_losses.py` (bounds, gradient-finiteness, an exact hand-computed
+regression case for TopK, a shape-matching sanity check for RMI, a
+CUDA-crash regression guard), all three were smoke-tested together in one
+real `train.py` run (`--flood-loss-fn unified_focal --flood-rmi-weight 0.1
+--flood-topk-weight 0.1`, synthetic data, 1 epoch) to confirm they compose
+without crashing end-to-end, not just in isolation.
+
+**Status: available, not yet chosen for a real run.** Per `docs/
+RESEARCH_NOTES.md`'s own priority note, TopK and Unified Focal are the
+cheaper single-run ablations; RMI is the more expensive, more theoretically
+distinct lever (and the one an actual challenge winner used). None have
+real-data evidence behind them yet -- that's the natural next step once
+v15 finishes or a spare training slot opens up.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
