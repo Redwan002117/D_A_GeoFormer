@@ -2166,6 +2166,38 @@ yet either. Building reached another new high (0.612). Continuing to
 monitor for a longer, more convincing stretch before calling this
 durable.
 
+### 12.40 v14 epochs 29-31: a real, durable floor -- the longer stretch resolves it
+
+| epoch | flooded F1 | delta | coverage |
+|---|---|---|---|
+| 29 | 0.269 | +0.003 | 23/87 |
+| 30 | 0.248 | -0.021 | 17/87 |
+| 31 | 0.257 | +0.009 | 19/87 |
+
+Taking the full epoch 23-31 stretch together (9 epochs): 0.302, 0.302,
+0.289, 0.271, 0.273, 0.266, 0.269, 0.248, 0.257. This is genuinely
+bounded, noisy oscillation within a ~0.25-0.31 band -- not a trend
+toward zero. 14 epochs past the peak (epoch 17's 0.489), and flooded
+F1 has never come close to 0.000 the way every prior run in this
+lineage did by this point (v10 by its own epoch 8; v12 at epoch 19;
+v13 at epoch 20).
+
+**Stated plainly, per S12.39's own bar for what would count as enough
+evidence**: v14 has found a real, durable floor for flooded detection
+-- something no prior run in this project (v1 through v13) ever
+achieved. This is a genuine positive finding, not a provisional one
+being walked back like S12.21 or S12.37 were. Building has stayed
+healthy throughout this whole stretch too (0.60-0.61 range).
+
+**What remains honestly unresolved**: which of the four combined
+levers (`flood-head-patience`, `copy-paste-prob`, `flood-bce-weight`,
+`ema-momentum`) is responsible, or whether all four together are
+needed -- S12.36 already flagged this, and it's still true. An
+ablation (each lever tested alone from this same v12-epoch-16 starting
+checkpoint) is the honest next step to find out which one actually
+matters, both for understanding the mechanism and for knowing which
+lever(s) are worth keeping in future training recipes.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
