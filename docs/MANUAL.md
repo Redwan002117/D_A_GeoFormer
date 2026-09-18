@@ -2254,6 +2254,37 @@ finding (confirmed across multiple decline-then-recover cycles, not
 a single lucky read), clearly distinct from every prior run in this
 project's history.
 
+### 12.43 Epochs 38-42: the decline resumed, now below the previous band -- S12.42's read needs revising again
+
+| epoch | flooded F1 | delta | coverage |
+|---|---|---|---|
+| 37 | 0.250 | -- | 17/87 |
+| 38 | 0.236 | -0.014 | 16/87 |
+| 39 | 0.221 | -0.015 | 16/87 |
+| 40 | 0.206 | -0.015 | 16/87 |
+| 41 | 0.194 | -0.012 | 14/87 |
+| 42 | **0.163** | -0.031 | 13/87 |
+
+Five consecutive declining epochs, breaking below the ~0.20-0.31 band
+that held for epochs 23-37. Unlike the earlier S12.41 dip (which
+reversed after 3 epochs, S12.42), this decline has now continued for
+5 straight epochs and reached a new low since the peak (0.163).
+Coverage is also at a new low (13/87). `checkpoints_v14/best.pt`
+remains unchanged (epoch 17) -- no checkpoint promotion.
+
+**Revising S12.42's framing again, honestly**: "sustained, bounded
+non-collapse" was accurate for the 21 epochs it described, but this
+run's actual behavior has turned out to be less settled than that
+framing implied -- real recoveries AND real continued declines, not a
+single stable band. Whether epoch 42's 0.163 is another dip that
+recovers (as epoch 34's 0.203 did) or the start of an eventual approach
+to 0.000 is, once again, genuinely unknown from the data so far. The
+single most reliable statement remains the comparative one: 25 epochs
+past the peak, v14 has still never hit exactly 0.000, which no prior
+run in this project achieved at a comparable point -- that comparison
+has held up through every revision above, even as the finer-grained
+"is it a floor or still declining" question keeps needing correction.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
