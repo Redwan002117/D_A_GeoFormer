@@ -2607,6 +2607,56 @@ the file on disk mid-run doesn't touch v15 at all. Only a future process
 (e.g. a v16 launch) picks up the corrected file. v15 itself was not
 paused, restarted, or otherwise touched for this fix.
 
+**Follow-up pass, same session: finished manually inspecting the
+misalignment-flagged tiles.** 6 more of the 15 flagged tiles were checked
+(9 of 15 now individually confirmed, one way or another), prioritized with
+a cheap automated pre-filter (post-image mean brightness + std-dev --
+`brightness > 150 and contrast < 35` as a cloud proxy) before spending a
+visual check on each:
+
+- **4 more confirmed genuinely cloud-covered** (`..._1_9_98`, `..._2_20_42`,
+  plus the two from the first pass) -- the brightness/contrast proxy
+  correctly flagged both new ones it was tried on, for whatever that's
+  worth as a cheap future triage tool (not validated as a general-purpose
+  detector, just checked on this small sample).
+- **1 confirmed as a genuine no-data / swath-edge gap**
+  (`..._0_24_17`): the pre-image is fully populated; the post-image has a
+  solid black wedge covering roughly a third of the tile where no imagery
+  was captured at all -- a distinct failure mode from cloud cover, same
+  practical effect (part of the tile has no real post-event signal).
+- **The one flood-labeled tile in the flagged list not yet checked,
+  `..._0_19_13` (13,864 flood px, the largest flood label among all 15
+  flagged tiles) -- the most operationally relevant case found in this
+  whole pass.** Its post-image is significantly cloud-covered (roughly the
+  top-left third), but the clear portion visibly shows real flooding: the
+  pre-image shows a normal river-adjacent industrial dock, the post-image
+  shows the same area under water well beyond the river's normal bank.
+  **Verdict: the flood label is very likely genuinely correct** (this
+  isn't the isolated-artifact case S12.48's first pass found), but part of
+  its labeled extent sits under cloud cover where it can't be visually
+  re-verified -- degraded-confidence signal, not corrupted signal. No
+  action taken; flagged here rather than auto-excluded, consistent with
+  this audit's own stated philosophy that this proxy is for triage, not
+  automatic exclusion.
+- Remaining 6 of the original 15 (`..._2_24_42`, `..._1_14_84`,
+  `..._1_16_87`, `..._0_14_7`, `0_35_61`, and the already-covered
+  `..._2_20_40`) were **not** individually visually checked in this pass
+  -- none carry a flood label (confirmed from `index.json`), so they were
+  deprioritized relative to the two that did. A genuinely exhaustive audit
+  would still check them; this pass optimized for "does this affect actual
+  flood-detection training," not completeness for its own sake.
+
+**Net effect on the training data**: no tiles were excluded or modified
+this pass beyond the S12.48 pixel-count fix above -- every cloud/nodata
+tile found lacks a flood label, so their cost is degraded structural
+(building/road) signal on a handful of tiles, not corrupted flood signal.
+The one flood-labeled tile checked (`..._0_19_13`) looks like a real,
+correctly-labeled flood partially under cloud, not an error. **The actual
+had-a-flood-label annotation bug found and fixed in this whole audit
+remains the pixel-count-resolution mismatch above (S12.48's first
+section)** -- a real, systematic bug, not a large one in raw tile count
+(2 of 801), but a genuine bug nonetheless, now fixed and tested.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

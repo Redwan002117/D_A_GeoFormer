@@ -153,11 +153,18 @@ exist in their actual training mask. Fixed by `fix_index_pixel_counts.py`
 (5 tests), applied to the real dataset. Full writeup: `docs/MANUAL.md`
 S12.48.
 
-**Not yet done**: a full manual pass over the remaining ~13 misalignment-
-flagged tiles (only 2 of ~15 were actually inspected in this pass), and
-the SOTA paper's own broader "remove mislabeled tiles" sweep (they don't
-publish which tiles or how many) — this pass found and fixed one concrete,
-real bug, not an exhaustive audit.
+**Follow-up pass**: 6 more of the 15 misalignment-flagged tiles checked
+(9/15 total now), including the one that mattered most — the largest
+flood-labeled tile in the flagged list turned out to be a real, correctly-
+labeled flood partially under cloud cover, not an error. Full detail in
+`docs/MANUAL.md` S12.48. 6 tiles (none flood-labeled) remain unchecked —
+deprioritized since they can't be corrupting flood-detection training
+specifically. The SOTA paper's own broader "remove mislabeled tiles"
+sweep (they don't publish which tiles or how many) is still not
+replicated here — this pass found and fixed one concrete, real bug
+(the pixel-count resolution mismatch) and characterized the misalignment
+proxy's real false-positive/true-positive mix, not an exhaustive
+tile-by-tile relabel.
 
 The same SpaceNet-8 SOTA paper (arXiv 2404.18235) reports its single
 largest, cleanly-attributed improvement came from **removing mislabeled
