@@ -2011,6 +2011,29 @@ v14 (next) combines both new levers with the full proven stack, resumed
 from `checkpoints/best.pt` (v12 epoch 16, this section's own formal
 benchmark) -- reported once real epochs land.
 
+### 12.35 v14 epochs 17-18: healthy start, too early to attribute anything yet
+
+v14 resumed from `checkpoints/best.pt` (v12 epoch 16) with
+`--flood-head-patience 4 --copy-paste-prob 0.3 --flood-bce-weight 1.0
+--ema-momentum 0.002` on top of the full proven stack.
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage |
+|---|---|---|---|---|
+| 17 | 0.593 | 0.443 | 0.489 | 24/87 |
+| 18 | **0.608** (new project best) | 0.442 | 0.448 | 26/87 |
+
+Building reached a new project best (0.608). flooded F1 (0.489, 0.448)
+is in the same general range as prior runs at this point in the
+lineage, not clearly higher than v13's own epoch 17-18 (0.518, 0.519) --
+too early and too close to call the new levers helping or not helping
+yet. No `flood_head FROZEN` message has printed (expected: `--flood-
+head-patience 4` needs 4 consecutive epochs without beating the
+running-best flooded F1, and only 2 epochs have happened, with no
+established decline yet). No crash; copy-paste augmentation ran
+without issue across a full real epoch. Continuing to monitor through
+the epoch ~20 window that has been decisive in every prior run in this
+lineage (v10, v12, v13).
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
