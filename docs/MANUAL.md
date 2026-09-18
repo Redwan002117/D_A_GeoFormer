@@ -2143,6 +2143,29 @@ does it continue decelerating toward a genuine floor above zero? Both
 are plausible from six epochs of data. Continuing to monitor rather
 than calling either outcome yet.
 
+### 12.39 Epochs 27-28: deltas shrinking and turning noisy -- leaning toward a real floor, not yet conclusive
+
+| epoch | flooded F1 | epoch-over-epoch delta | coverage |
+|---|---|---|---|
+| 25 | 0.289 | -0.013 | 26/87 |
+| 26 | 0.271 | -0.017 | 22/87 |
+| 27 | 0.273 | **+0.002** (upward) | 22/87 |
+| 28 | 0.266 | -0.007 | 21/87 |
+
+8 epochs past the peak (0.489, epoch 17), flooded F1 is 0.266 -- still
+meaningfully nonzero. The epoch-over-epoch deltas have shrunk to
+roughly +-0.01-0.02 and turned NOISY (epoch 27 actually rose slightly)
+rather than continuing the earlier steady monotonic decline. This
+pattern -- small, noisy fluctuation rather than a steady approach to
+zero -- is more consistent with the decline decelerating toward a real
+floor than with a delayed version of the same collapse. Not
+conclusive from 8 epochs, and this project's own history (S12.21's
+premature optimism, corrected in S12.22; S12.37's premature "plateau"
+read, corrected in S12.38) is a direct reason not to over-claim this
+yet either. Building reached another new high (0.612). Continuing to
+monitor for a longer, more convincing stretch before calling this
+durable.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
