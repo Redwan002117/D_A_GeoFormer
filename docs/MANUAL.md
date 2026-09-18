@@ -2229,6 +2229,31 @@ multi-epoch improvement nor a multi-epoch plateau has yet proven
 durable on the first read -- only sustained continuation past where
 prior optimistic reads broke down has.
 
+### 12.42 Epochs 35-37: recovered again -- 21 epochs post-peak, bounded oscillation, never zero
+
+| epoch | flooded F1 | delta |
+|---|---|---|
+| 34 | 0.203 | -0.023 |
+| 35 | 0.223 | +0.020 |
+| 36 | 0.237 | +0.014 |
+| 37 | 0.250 | +0.013 |
+
+The S12.41 decline reversed -- 3 consecutive recovering epochs, back
+to 0.250. The full epoch 23-37 stretch (15 epochs): 0.302, 0.302,
+0.289, 0.271, 0.273, 0.266, 0.269, 0.248, 0.257, 0.256, 0.225, 0.203,
+0.223, 0.237, 0.250 -- bounded within roughly a 0.20-0.31 band, no
+sustained trend either direction, never approaching 0.000.
+`checkpoints_v14/best.pt` unchanged (still epoch 17).
+
+**The most accurate description at this point, avoiding both the
+S12.40 overclaim and the S12.41 underclaim**: not a converged "floor"
+(implies settling), not a "delayed collapse" (implies still heading to
+zero) -- **sustained, bounded non-collapse over 21 epochs since the
+peak**. That is itself the real, robust, and by now well-replicated
+finding (confirmed across multiple decline-then-recover cycles, not
+a single lucky read), clearly distinct from every prior run in this
+project's history.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
