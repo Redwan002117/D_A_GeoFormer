@@ -153,37 +153,54 @@ def run_epochs(run_id: int):
     the actual continuation; the ancestor's row for that epoch is what
     got superseded by resuming.
     """
+    # BUG THIS FIXES (real, measured): get_conn() opens a fresh Postgres
+    # connection per request (Neon's per-connection round-trip latency is
+    # real, not negligible), and the original version of this endpoint
+    # walked the ancestry chain with ONE ROUND TRIP PER HOP, then fetched
+    # each ancestor's epochs with a SEPARATE round trip too -- a 3-run
+    # chain took ~3.7s alone (measured directly), and the Analytics tab
+    # fires this for every run in parallel (21 runs, 21 simultaneous new
+    # connections), which stalled the whole page for 10+ seconds.
+    # Collapsed to exactly 2 round trips total, regardless of chain depth:
+    # one recursive CTE for the whole ancestry chain, one batched query
+    # for every ancestor's epochs at once.
     conn = get_conn()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        # Oldest-ancestor-first order, built by walking parent_run_id from
-        # run_id upward. Capped at 50 hops -- a real lineage chain is a
-        # handful of runs deep; a longer one signals a cycle (a data bug,
-        # not a real project history) and must not hang the request.
-        chain_ids = []
-        current_id = run_id
-        for _ in range(50):
-            chain_ids.append(current_id)
-            cur.execute("SELECT parent_run_id FROM training_runs WHERE id = %s", (current_id,))
-            row = cur.fetchone()
-            if not row or row["parent_run_id"] is None:
-                break
-            current_id = row["parent_run_id"]
-        chain_ids.reverse()  # oldest ancestor first, this run last
+        cur.execute(
+            """
+            WITH RECURSIVE ancestry(id, depth) AS (
+                SELECT id, 0 FROM training_runs WHERE id = %s
+                UNION ALL
+                SELECT tr.parent_run_id, a.depth + 1
+                FROM ancestry a JOIN training_runs tr ON tr.id = a.id
+                WHERE tr.parent_run_id IS NOT NULL AND a.depth < 50
+            )
+            SELECT id FROM ancestry ORDER BY depth DESC
+            """,
+            (run_id,),
+        )
+        chain_ids = [r["id"] for r in cur.fetchall()]  # oldest ancestor first, this run last
+        if not chain_ids:
+            raise HTTPException(404, f"No epoch data for run_id={run_id}")
+
+        cur.execute(
+            """
+            SELECT run_id, epoch, train_loss, val_loss,
+                   f1_background, f1_building, f1_road, f1_flooded,
+                   pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
+                   lr, epoch_seconds
+            FROM epoch_logs WHERE run_id = ANY(%s) ORDER BY epoch
+            """,
+            (chain_ids,),
+        )
+        rows_by_run: dict[int, list[dict]] = {rid: [] for rid in chain_ids}
+        for r in cur.fetchall():
+            rows_by_run[r["run_id"]].append(dict(r))
 
         by_epoch: dict[int, dict] = {}
         for rid in chain_ids:
-            cur.execute(
-                """
-                SELECT epoch, train_loss, val_loss,
-                       f1_background, f1_building, f1_road, f1_flooded,
-                       pred_images_background, pred_images_building, pred_images_road, pred_images_flooded,
-                       lr, epoch_seconds
-                FROM epoch_logs WHERE run_id = %s ORDER BY epoch
-                """,
-                (rid,),
-            )
-            this_run_rows = cur.fetchall()
+            this_run_rows = rows_by_run[rid]
             if not this_run_rows:
                 continue
             # BUG THIS FIXES: an ancestor run (e.g. v12) can have LATER
@@ -205,7 +222,7 @@ def run_epochs(run_id: int):
             for e in [k for k in by_epoch if k >= min_epoch]:
                 del by_epoch[e]
             for r in this_run_rows:
-                by_epoch[r["epoch"]] = dict(r)
+                by_epoch[r["epoch"]] = {k: v for k, v in r.items() if k != "run_id"}
 
         if not by_epoch:
             raise HTTPException(404, f"No epoch data for run_id={run_id}")

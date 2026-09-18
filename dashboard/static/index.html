@@ -774,7 +774,11 @@ function drawBarChart() {
   // One labeled row per run, three always-horizontal, always-readable
   // bars underneath, scales to any number of runs by simply growing
   // taller, not more crowded.
-  const runs = runsData.filter(r => r.n_epochs);
+  // runsData is ORDER BY r.id ascending (oldest first) -- reversed here
+  // only, so the newest/most-relevant run reads first without touching
+  // the ordering other code (e.g. loadRuns() picking runsData[length-1]
+  // as "latest") depends on.
+  const runs = runsData.filter(r => r.n_epochs).slice().reverse();
   const classKeys = [
     { key: 'f1_building', label: 'building', color: '#ff6f6f' },
     { key: 'f1_road', label: 'road', color: '#2fd8c9' },
