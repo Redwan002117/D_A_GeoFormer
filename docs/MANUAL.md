@@ -2198,6 +2198,37 @@ checkpoint) is the honest next step to find out which one actually
 matters, both for understanding the mechanism and for knowing which
 lever(s) are worth keeping in future training recipes.
 
+### 12.41 Correction, epochs 32-34: renewed decline -- S12.40's "durable floor" may have been a longer plateau, not a floor
+
+| epoch | flooded F1 | delta | coverage |
+|---|---|---|---|
+| 31 | 0.257 | +0.009 | 19/87 |
+| 32 | 0.256 | -0.001 | 17/87 |
+| 33 | 0.225 | -0.031 | 14/87 |
+| 34 | **0.203** | -0.023 | 16/87 |
+
+Three consecutive declining epochs, breaking below the ~0.25-0.31 band
+that held for epochs 23-32 (9 epochs). Coverage is trending down too
+(19 -> 17 -> 14 -> 16). Correcting S12.40 rather than letting it stand
+uncorrected: what looked like a durable floor may have been a longer
+noisy plateau within a still-continuing overall decline, the same
+pattern this project has now seen at least twice before at different
+timescales (S12.21/S12.22's shorter version, S12.37/S12.38's shorter
+version) -- just stretched out further this time by the combined
+levers. `checkpoints_v14/best.pt` has not moved past epoch 17 (its
+min_f1 hasn't been beaten since), so no checkpoint promotion is
+warranted -- `checkpoints/best.pt` (v12 epoch 16) remains the
+project's actual best real result.
+
+**Not yet calling this a full collapse either** -- 0.203 is still
+nonzero, still notably different from every prior run's exact 0.000
+at a comparable point. Whether this continues declining to 0 or finds
+a genuinely lower floor is, again, an open question. Continuing to
+monitor with the calibration this project has now earned: neither a
+multi-epoch improvement nor a multi-epoch plateau has yet proven
+durable on the first read -- only sustained continuation past where
+prior optimistic reads broke down has.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
