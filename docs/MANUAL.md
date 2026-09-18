@@ -2076,6 +2076,43 @@ If the durability holds through several more epochs, an ablation
 be the honest next step to find out which one actually matters, rather
 than assuming all four are necessary or crediting one without evidence.
 
+### 12.37 v14 epochs 22-23: flooded F1 has genuinely flattened, not just delayed its decline
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage |
+|---|---|---|---|---|
+| 20 | 0.593 | 0.425 | 0.310 | 28/87 |
+| 21 | 0.591 | 0.435 | 0.301 | 27/87 |
+| 22 | 0.600 | 0.439 | 0.307 | 30/87 |
+| 23 | **0.607** | 0.440 | 0.302 | 30/87 |
+
+**A pattern not seen anywhere else in this project**: flooded F1
+declined for 4 straight epochs (0.489 -> 0.448 -> 0.327 -> 0.310 ->
+0.301) then FLATTENED -- 3 epochs now oscillating narrowly around
+0.30-0.31 (0.301, 0.307, 0.302), with coverage actually recovering
+slightly (27 -> 30 -> 30). This is a real plateau, not a slower version
+of the same slide to exactly 0.000 every prior run in this lineage
+(v10, v12, v13) showed. Building also keeps improving (0.607, near
+its own project best) alongside the flattened flooded curve.
+
+This shape -- decline, then hold -- is exactly what a working
+`flood_head_patience` freeze would produce: training stops pulling
+flood_head's own weights further down once patience is exhausted
+(computed to trigger at epoch 21, S12.36), so the read-out itself
+stops degrading even though `split_trunk` (shared, still training on
+the structure loss) keeps slowly moving underneath it -- consistent
+with a plateau rather than a full recovery. Still cannot directly
+confirm the "flood_head FROZEN" print message landed (this run's
+stdout remains unflushed on disk as of this check), but the CSV's own
+shape is strong indirect evidence consistent with the freeze having
+triggered and being effective.
+
+**Appropriately cautious framing**: 3 flat epochs is meaningful, real
+progress -- the first stabilization in this entire project -- but not
+yet long enough to call this durably solved. Continuing to monitor for
+whether the plateau holds for many more epochs (the real target,
+since `--epochs 150` leaves a great deal of training still ahead) or
+eventually resumes declining despite the freeze.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
