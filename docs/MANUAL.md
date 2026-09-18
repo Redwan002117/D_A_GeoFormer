@@ -2532,6 +2532,81 @@ semi-supervised training actually runs) could plausibly interact with it
 differently -- re-testing is one flag, not new code. Not enabled by
 default; no config anywhere sets `--suppress-isolated-flood`.
 
+### S12.48 -- annotation audit (docs/RESEARCH_NOTES.md item 5): a real, if
+small, bug found in `index.json`'s per-tile pixel counts, fixed
+
+Built `audit_data_quality.py` (file integrity, exact pre/post duplicates,
+a degenerate-flood-feature check, an FFT-phase-correlation misalignment
+proxy) and ran it against all 801 real tiles. Every check that could be
+automated was; every tile flagged as suspicious was then **actually looked
+at** (the pre/post/mask PNGs, via direct image inspection) before drawing
+any conclusion -- not just trusted as a heuristic.
+
+**No corrupted files, no exact pre==post duplicate images.** The data-prep
+pipeline is clean on those two axes across the whole 801-tile set.
+
+**The misalignment proxy has real signal but a real false-positive rate,
+exactly as its own docstring warned it would.** Visually confirmed at
+least two genuinely cloud-covered `post` images among the top-flagged
+tiles (`Louisiana-East_Training_Public__1_14_93`,
+`..._0_14_6`) -- the post-event image is unusable for change detection,
+not just shifted. Neither carries a flood label, so the direct harm is
+degraded/noisy input rather than a corrupted label, but it's a real,
+visually-confirmed data quality issue nonetheless. Also visually confirmed
+a clear FALSE POSITIVE (`..._0_19_19`): flagged for "high shift," but the
+pre/post pair shows a real, visible flooding event over farmland -- the
+heuristic mistook genuine content change for misalignment. **Conclusion,
+stated plainly: this proxy is good for triage, not for automatic
+exclusion** -- exactly the caution its own code comment states. A full
+manual pass over all ~15+ flagged tiles (only 2 of ~15 were checked here)
+is a reasonable next step, not done in this pass.
+
+**A real, small, precisely-diagnosed bug, found and fixed**: investigating
+the single most extreme "degenerate flood feature" case
+(`0_24_68`, `class_pixel_counts` claiming exactly 1 flooded pixel from 1
+GeoJSON feature) visually confirmed no flooding is visible in either the
+pre or post image at all. Digging into why revealed something bigger than
+one bad tile: **every entry's `class_pixel_counts` in `index.json` sums to
+exactly 1,690,000 = 1300×1300 -- the ORIGINAL rasterization resolution --
+while every actual saved `mask/*.png` is 256×256 = 65,536 pixels, a
+constant 25.79x mismatch across all 801 tiles, confirmed systematic, not
+random corruption.** The counts were computed once, before the tiles were
+resized down to 256×256 for training, and never recomputed after --
+`0_24_68`'s "1 pixel" is genuinely a single pixel at 1300×1300, which
+rounds away to *zero* pixels once resized to 256×256, matching exactly
+what visual inspection already showed.
+
+**Confirmed concrete impact, not just a metadata inconsistency**:
+`dataset.py`'s `class_sampling_weights()` (`--oversample-rare-classes`)
+checks `class_pixel_counts.get("3", 0) > 0` to decide whether a tile counts
+as "has flooded" for oversampling. A full sweep of all 801 real masks
+found **2 tiles** (`0_24_68`, `0_36_62`) flagged as flood-containing by the
+stale pre-resize metadata whose actual 256×256 training mask has zero
+flood pixels -- oversampling weight was being spent on tiles with no real
+flood signal to learn from. (3 similar mismatches exist for the building
+class too, not separately chased down here.)
+
+**The fix**: `fix_index_pixel_counts.py`, a one-time migration that
+recomputes every tile's `class_pixel_counts` directly from its real
+`mask/*.png` via `np.unique`. Run with `--dry-run` first to confirm the
+exact diagnosis (801/801 counts corrected, 2 flood-presence flips, matching
+hand-verification exactly), then applied for real against
+`real_sn8_dataset_full/index.json` (backed up first, as
+`index.json.bak-pre-S12.48`). 5 new tests in
+`tests/test_fix_index_pixel_counts.py`, including the exact `0_24_68`
+regression case reproduced from real numbers. Corrected dataset-wide
+flood-tile count: 200 -> 198 of 801 (the 2 confirmed cases; the true
+flood-pixel fraction was already ~0.0055 either way -- this fixes which
+SPECIFIC tiles count as flood-containing, not the overall severity of the
+imbalance).
+
+**Safe to apply while v15 was running, and actually applied that way**:
+`dataset.py` loads `index.json` once, in `Dataset.__init__` -- a
+long-running process already has the old values in memory, so correcting
+the file on disk mid-run doesn't touch v15 at all. Only a future process
+(e.g. a v16 launch) picks up the corrected file. v15 itself was not
+paused, restarted, or otherwise touched for this fix.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

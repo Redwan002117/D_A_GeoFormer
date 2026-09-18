@@ -135,6 +135,30 @@ Sources: [Unified Focal loss paper](https://arxiv.org/abs/2102.04525),
 [Loss function survey](https://arxiv.org/html/2312.05391)
 
 ### 5. Systematic annotation error removal
+**[DONE — first pass, S12.48.]** `audit_data_quality.py` (file integrity,
+duplicate detection, degenerate-flood-feature check, misalignment proxy)
+run against all 801 real tiles, with every flagged tile actually visually
+inspected before acting on it, not just trusted as a heuristic. Result: no
+corrupted files or exact duplicates; found and visually confirmed at least
+2 genuinely cloud-covered `post` images (not yet acted on further); found
+and visually confirmed a clean false positive (the misalignment proxy
+flagging a tile that turned out to contain a real flood event, not
+misalignment); and — bigger than the tile-level annotation check itself —
+found that `index.json`'s `class_pixel_counts` were stale, computed at the
+1300×1300 pre-resize rasterization resolution rather than the actual
+256×256 training masks, a systematic (not random) mismatch across all 801
+tiles. This had a real, measured effect on `--oversample-rare-classes`:
+2 tiles were getting flood-oversampling weight for a signal that doesn't
+exist in their actual training mask. Fixed by `fix_index_pixel_counts.py`
+(5 tests), applied to the real dataset. Full writeup: `docs/MANUAL.md`
+S12.48.
+
+**Not yet done**: a full manual pass over the remaining ~13 misalignment-
+flagged tiles (only 2 of ~15 were actually inspected in this pass), and
+the SOTA paper's own broader "remove mislabeled tiles" sweep (they don't
+publish which tiles or how many) — this pass found and fixed one concrete,
+real bug, not an exhaustive audit.
+
 The same SpaceNet-8 SOTA paper (arXiv 2404.18235) reports its single
 largest, cleanly-attributed improvement came from **removing mislabeled
 tiles**, not from any architecture or loss change: IoU 0.727 → 0.749 (+2.2
@@ -142,10 +166,7 @@ points), with precision +5% and F1 +2.6% specifically credited to data
 cleaning. The 5th-place solution independently did the same thing
 (blacklisting specific tiles with known annotation errors) and also
 discarded misaligned/cloud-covered pre/post image pairs using an MSE
-alignment check. **This project has not done any systematic annotation
-audit of the 801 real tiles** — worth checking whether any of the
-persistently-hardest validation tiles are actually mislabeled rather than
-genuinely hard.
+alignment check.
 
 Source: [arXiv 2404.18235](https://arxiv.org/html/2404.18235v1)
 
