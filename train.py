@@ -155,6 +155,32 @@ def reinit_flood_head(model, optimizer) -> None:
         optimizer.state.pop(p, None)
 
 
+def flood_head_patience_step(flood_f1_history, best_so_far, epochs_since_improved, patience,
+                              smooth_window):
+    """Pure decision function for the --flood-head-patience mechanism: given the
+    val_f1_flooded history so far (this epoch's value already appended) and the
+    tracker state, return (new_best_so_far, new_epochs_since_improved, should_freeze).
+
+    Compares a SMOOTHED value (mean of the last `smooth_window` epochs) against the
+    smoothed best-so-far, not the raw single-epoch value.
+
+    WHY THIS EXISTS (docs/MANUAL.md S12.45): the original implementation compared
+    raw per-epoch val_f1_flooded directly. On v14, flooded pixels are <1% of the
+    data with only ~20-28 of 87 val tiles containing any -- single-epoch val_f1_flooded
+    is noisy enough that 4 epochs of ordinary sampling variance (not genuine collapse)
+    tripped patience=4 right after a real peak (epoch 51, F1=0.5463), permanently
+    freezing flood_head for the remaining ~100 epochs of a 150-epoch run. Smoothing
+    both sides of the comparison the same way absorbs that noise; smooth_window=1
+    recovers the exact old raw-value behavior.
+    """
+    window = flood_f1_history[-smooth_window:]
+    smoothed = sum(window) / len(window)
+    if smoothed > best_so_far:
+        return smoothed, 0, False
+    epochs_since_improved += 1
+    return best_so_far, epochs_since_improved, epochs_since_improved >= patience
+
+
 class ConfusionAccumulator:
     """Accumulates raw TP/FP/FN counts (and per-image class coverage) across
     an entire validation/evaluation pass, so F1 is computed ONCE from the
@@ -438,6 +464,19 @@ def main():
                          "checkpoint from being lost either way; this additionally tries to keep "
                          "TRAINING itself from moving away from a good flood state while still "
                          "letting building/road/background keep improving.")
+    p.add_argument("--flood-head-patience-smooth-window", type=int, default=3,
+                    help="--flood-head-patience only: instead of comparing each epoch's raw "
+                         "val_f1_flooded against the best-so-far, compare the mean of the last N "
+                         "epochs (N=this value) -- both the running best and the current value "
+                         "are smoothed the same way. Bug found in practice (v14, docs/MANUAL.md "
+                         "S12.45): with the raw per-epoch value and the default patience of 4, "
+                         "flooded F1 peaked at epoch 51 (0.5463) then hit 4 epochs of ordinary "
+                         "sampling noise (52-55, still in the 0.52-0.56 band it had been in all "
+                         "along) and froze flood_head for the remaining ~100 epochs of a 150-epoch "
+                         "run -- flooded pixels are under 1%% of the data and only ~20-28 of 87 val "
+                         "tiles contain any, so single-epoch val_f1_flooded is noisy enough that "
+                         "patience=4 on the raw value triggers on normal variance, not genuine "
+                         "collapse. Set to 1 to recover the old raw-value behavior exactly.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -638,6 +677,7 @@ def main():
     best_flood_f1_so_far = -1.0
     epochs_since_flood_f1_improved = 0
     flood_head_frozen = False
+    flood_f1_history = []
 
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
@@ -694,18 +734,18 @@ def main():
 
         if args.flood_head_patience is not None and not flood_head_frozen:
             flood_f1_this_epoch = f1_final[3] if f1_final[3] is not None else -1.0
-            if flood_f1_this_epoch > best_flood_f1_so_far:
-                best_flood_f1_so_far = flood_f1_this_epoch
-                epochs_since_flood_f1_improved = 0
-            else:
-                epochs_since_flood_f1_improved += 1
-            if epochs_since_flood_f1_improved >= args.flood_head_patience:
+            flood_f1_history.append(flood_f1_this_epoch)
+            best_flood_f1_so_far, epochs_since_flood_f1_improved, should_freeze = flood_head_patience_step(
+                flood_f1_history, best_flood_f1_so_far, epochs_since_flood_f1_improved,
+                args.flood_head_patience, args.flood_head_patience_smooth_window)
+            if should_freeze:
                 for p_ in model.flood_head.parameters():
                     p_.requires_grad_(False)
                 flood_head_frozen = True
-                print(f"  -> flood_head FROZEN (epoch {epoch + 1}): flooded F1 hasn't beaten "
-                      f"{best_flood_f1_so_far:.4f} for {args.flood_head_patience} epochs "
-                      f"(docs/MANUAL.md S12.34)")
+                print(f"  -> flood_head FROZEN (epoch {epoch + 1}): smoothed flooded F1 "
+                      f"(mean of last {args.flood_head_patience_smooth_window} epochs) hasn't "
+                      f"beaten {best_flood_f1_so_far:.4f} for {args.flood_head_patience} epochs "
+                      f"(docs/MANUAL.md S12.34, S12.45)")
 
         if raw_state_for_restore is not None:
             model.load_state_dict(raw_state_for_restore)

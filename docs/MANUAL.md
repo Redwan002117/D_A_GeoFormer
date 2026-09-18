@@ -2371,6 +2371,63 @@ have kept logging understated metrics) was stopped and will resume
 from `checkpoints_v14/last.pt` with the fix in place, so every epoch
 from here on reports real numbers.
 
+### S12.45 -- `--flood-head-patience`'s raw-value comparison froze the flood
+head at epoch 55 on ordinary noise, not genuine collapse
+
+After resuming with the S12.44 fix, `val_f1_flooded` climbed to a real peak
+of **0.5463 at epoch 51**, then spent epochs 52-55 in the same 0.52-0.56
+band it had already been living in -- ordinary sampling noise, not decline.
+`--flood-head-patience 4` (S12.34) compares each epoch's *raw* value
+against the best-so-far and freezes `model.flood_head`'s parameters once 4
+consecutive epochs fail to beat it; those 4 noisy-but-normal epochs tripped
+it, and **flood_head sat frozen for the remaining ~95 epochs of the
+150-epoch run** while building/road F1 kept improving through the still-
+trainable shared trunk. Confirmed directly by replaying the tracker's exact
+logic against the real logged CSV values (not assumed) -- see
+`tests/test_train.py::test_flood_head_patience_step_raw_value_regression_case`,
+which reproduces the freeze at epoch 55 verbatim from
+`training_log_geoformer_801_v14.csv`.
+
+**Why the metric is this noisy**: flooded pixels are under 1% of the
+dataset, and only ~20-28 of the 87 validation tiles contain any flood
+coverage at all (§12.2) -- a single epoch's `val_f1_flooded` is computed
+from a small, high-variance sample, so 4 non-improving epochs in a row is
+unremarkable noise, not evidence of anything going wrong.
+
+**The fix**: `flood_head_patience_step()` (`train.py`) now compares a
+smoothed value -- the mean of the last `--flood-head-patience-smooth-window`
+epochs (default 3) -- against an equally-smoothed running best, instead of
+the raw single-epoch value. Extracted as a pure function specifically so it
+could be unit-tested against the real data rather than trusted by
+inspection; `smooth_window=1` recovers the exact old behavior for
+comparison.
+
+**Honest limitation, checked rather than assumed**: smoothing delays the
+freeze (verified: the real epoch 48-55 sequence no longer freezes by epoch
+55 with `smooth_window=3` -- see
+`test_flood_head_patience_step_smoothing_delays_the_same_noise`), but it is
+not a complete fix on its own. Replaying the same real data further, even a
+generous `smooth_window=3` + `patience=8` still reads epochs 48-61 as a
+plateau and freezes at epoch 61 (`test_flood_head_patience_step_
+even_smoothing_cannot_promise_forever`) -- two epochs before the run's
+actual best smoothed value shows up at **epoch 74 (0.5512)**, itself
+following the single highest raw `val_f1_flooded` observed anywhere in the
+run, **epoch 73's 0.5608**. Tuning the patience number higher would have
+delayed the problem again, not solved it, on data this sparse.
+
+**Decision for v15**: leave `--flood-head-patience` unset (its documented
+default, "exact prior behavior") rather than re-enable it with a larger
+number. `--checkpoint-metric min_f1` already protects the best checkpoint
+regardless of what training does afterward (this was true before S12.34
+and remains true), so the patience-freeze was always a "nice to have"
+experiment layered on top of an already-safe checkpoint selection, not
+something the run depends on -- and the evidence above shows it cost real
+improvement (epoch 74's peak) more often than it protected anything the
+`min_f1` selection wasn't already going to catch. The smoothed
+`flood_head_patience_step()` function stays in the codebase, tested and
+available, for a future run where a much longer patience is deliberately
+wanted for a specific reason.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
@@ -2390,13 +2447,22 @@ parallelizing the scan) rather than a vague "needs more resources."
 
 ## 14. Known, deliberate limitations of this prototype
 
-- **No pretrained backbone.** `GeoFormerConfig`'s ~11M-parameter encoder is
-  randomly initialized, not MaxViT-Base/ImageNet-21k. Swapping in a `timm`
-  backbone is a `SiameseMaxViTEncoder` change, not a redesign — deliberately
-  deferred past proposal stage.
-- **No real SpaceNet-8 data yet.** `SpaceNet8Dataset` is implemented and
-  covered by a "fails loudly, not silently" test, but has not been run
-  against real data in this environment.
+- **Not the thesis-proposal backbone yet.** Since §12.11, `--pretrained-backbone
+  efficientnet_b0` (ImageNet-1k, ~5M params, via `timm`) IS wired in and is
+  what v5 onward (including v14/v15) actually trains with — this bullet is
+  updated from an earlier, now-stale claim that no pretrained backbone
+  existed at all. What's still deferred: the original thesis proposal named
+  MaxViT-Base specifically (ImageNet-21k, ~120M params), which is a real
+  step up in both pretraining scale and parameter count, and hasn't been
+  swapped in — `efficientnet_b0` was chosen instead because it's the
+  CPU-tractable option in this environment (§12.11.3).
+- **Real SpaceNet-8 data IS in use, contrary to an earlier draft of this
+  bullet.** `SpaceNet8Dataset` is what every v-numbered run since v2 has
+  actually trained and validated against — all 801 real, publicly-labeled
+  tiles across the Germany and Louisiana-East AOIs (§12.2), not synthetic
+  data. `SyntheticFloodDataset` still exists in `dataset.py` for quick
+  smoke-testing without a real data pull, but it is not what any of the
+  runs discussed in this manual actually used.
 - **`bridge_road_gaps` is O(endpoints²) per image** — fine for the sparse
   endpoint counts a single tile produces, not written for batched/GPU
   execution. It runs on CPU, post-inference, per image.

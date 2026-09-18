@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 import torch
 
-from train import checkpoint_score, reinit_flood_head, ema_init, ema_update
+from train import checkpoint_score, reinit_flood_head, ema_init, ema_update, flood_head_patience_step
 from model import DualAxisGeoFormer, GeoFormerConfig
 
 
@@ -161,6 +161,82 @@ def test_ema_update_copies_integer_buffers_instead_of_blending():
     assert torch.equal(ema_state[tracked_keys[0]], model.state_dict()[tracked_keys[0]])
 
 
+def test_flood_head_patience_step_raw_value_regression_case():
+    """This is the exact v14 bug (docs/MANUAL.md S12.45), reproduced with the
+    REAL val_f1_flooded values actually logged in
+    training_log_geoformer_801_v14.csv for epochs 48-55: with smooth_window=1
+    (the old raw-value behavior), the peak at epoch 51 (0.54628) is followed
+    by 4 epochs of ordinary noise in the same band it had already been living
+    in -- and patience=4 freezes flood_head at epoch 55, exactly as the real
+    run did."""
+    history = []
+    best, since, freeze = -1.0, 0, False
+    # epochs 48-55, val_f1_flooded, verbatim from training_log_geoformer_801_v14.csv
+    values = [0.53613, 0.53757, 0.54149, 0.54628, 0.53520, 0.54622, 0.53071, 0.51700]
+    for v in values:
+        history.append(v)
+        best, since, freeze = flood_head_patience_step(history, best, since, patience=4, smooth_window=1)
+    assert freeze, "test setup: this is the real sequence that froze flood_head in v14 at epoch 55"
+
+
+def test_flood_head_patience_step_smoothing_delays_the_same_noise():
+    """The fix, checked against the same real data: with smooth_window=3 and
+    the same patience=4, the real epoch 48-55 sequence must NOT have frozen
+    yet by epoch 55 -- smoothing absorbs enough single-epoch noise to buy
+    real additional training time, even though (see the next test) it can't
+    promise to prevent freezing forever on this noisy a metric."""
+    history = []
+    best, since, freeze = -1.0, 0, False
+    values = [0.53613, 0.53757, 0.54149, 0.54628, 0.53520, 0.54622, 0.53071, 0.51700]
+    for v in values:
+        history.append(v)
+        best, since, freeze = flood_head_patience_step(history, best, since, patience=4, smooth_window=3)
+    assert not freeze, "smoothing should have delayed the freeze past epoch 55, unlike the raw value"
+
+
+def test_flood_head_patience_step_even_smoothing_cannot_promise_forever():
+    """Honest limitation, not swept under the rug: flooded pixels are <1% of
+    this dataset (only ~20-28 of 87 val tiles have any), so even a generous
+    smooth_window=3 + patience=8 eventually reads a long enough quiet stretch
+    as a plateau -- real epochs 48-61 do this at epoch 61, two epochs before
+    the run's actual best smoothed value shows up at epoch 74 (0.5512, from
+    val_f1_flooded values 0.54822/0.56076/0.54472 around it). This is why the
+    v15 launch recommendation is to leave --flood-head-patience unset rather
+    than just raise the number -- see docs/MANUAL.md S12.45."""
+    history = []
+    best, since, freeze = -1.0, 0, False
+    # epochs 48-61, val_f1_flooded, verbatim from training_log_geoformer_801_v14.csv
+    values = [0.53613, 0.53757, 0.54149, 0.54628, 0.53520, 0.54622, 0.53071, 0.51700,
+              0.53804, 0.55150, 0.53710, 0.53276, 0.54587, 0.54357]
+    for v in values:
+        history.append(v)
+        best, since, freeze = flood_head_patience_step(history, best, since, patience=8, smooth_window=3)
+    assert freeze, "even smoothing+patience=8 catches this real noisy stretch -- tuning the number isn't a full fix"
+
+
+def test_flood_head_patience_step_still_freezes_on_genuine_sustained_decline():
+    """Smoothing must not defeat the mechanism's actual purpose -- a real,
+    sustained decline (not noise) should still trigger the freeze."""
+    history = []
+    best, since, freeze = -1.0, 0, False
+    values = [0.55, 0.54, 0.40, 0.35, 0.30, 0.25, 0.20, 0.15]  # genuine collapse
+    for v in values:
+        history.append(v)
+        best, since, freeze = flood_head_patience_step(history, best, since, patience=4, smooth_window=3)
+    assert freeze, "a genuine sustained decline must still freeze the head"
+
+
+def test_flood_head_patience_step_improvement_resets_the_counter():
+    """A new best (even a smoothed one) must reset epochs_since_improved to
+    0 -- otherwise a head that keeps setting new records could still freeze
+    if patience epochs happen to follow immediately after."""
+    history = [0.3, 0.3, 0.3]
+    best, since = 0.3, 3
+    best2, since2, freeze2 = flood_head_patience_step(history + [0.9], best, since, patience=4, smooth_window=1)
+    assert since2 == 0, "a new best-so-far must reset the non-improvement counter"
+    assert not freeze2
+
+
 if __name__ == "__main__":
     test_val_loss_metric_matches_prior_behavior()
     test_mean_f1_prefers_broad_detection_over_lower_loss()
@@ -171,4 +247,9 @@ if __name__ == "__main__":
     test_ema_update_moves_toward_raw_weights_by_momentum()
     test_ema_init_is_an_independent_clone_not_a_reference()
     test_ema_update_copies_integer_buffers_instead_of_blending()
+    test_flood_head_patience_step_raw_value_regression_case()
+    test_flood_head_patience_step_smoothing_delays_the_same_noise()
+    test_flood_head_patience_step_even_smoothing_cannot_promise_forever()
+    test_flood_head_patience_step_still_freezes_on_genuine_sustained_decline()
+    test_flood_head_patience_step_improvement_resets_the_counter()
     print("All tests passed.")
