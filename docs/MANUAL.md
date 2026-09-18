@@ -2113,6 +2113,36 @@ whether the plateau holds for many more epochs (the real target,
 since `--epochs 150` leaves a great deal of training still ahead) or
 eventually resumes declining despite the freeze.
 
+### 12.38 Correction, epochs 24-26: not a plateau -- a slower, continued decline
+
+| epoch | flooded F1 | flooded coverage |
+|---|---|---|
+| 23 | 0.302 | 30/87 |
+| 24 | 0.302 | 26/87 |
+| 25 | 0.289 | 26/87 |
+| 26 | 0.271 | 22/87 |
+
+S12.37's "plateau" read was premature -- flooded F1 is still declining,
+just much more slowly than before the freeze (roughly -0.01/epoch over
+epochs 23-26, versus roughly -0.047/epoch during the epoch 17-21
+slide, a real ~5x reduction in decline rate, not zero). Coverage is
+drifting down too (30 -> 26 -> 26 -> 22). Correcting the record rather
+than letting the more optimistic framing stand.
+
+**What is still real and different from every prior run**: by epoch
+26, flooded F1 is 0.271 -- v10/v12/v13 were all already at exactly
+0.000 well before their own equivalent points. Whatever the freeze
+(and/or the other three combined levers) is doing, it has clearly
+slowed the decline dramatically even if it hasn't stopped it. Building
+keeps improving throughout (0.610 at epoch 26, a new high) with no
+sign of the frozen flood pathway hurting the rest of the model.
+
+**Honest open question**: does this slow decline eventually reach
+0 anyway (a delayed version of the same collapse, just gentler), or
+does it continue decelerating toward a genuine floor above zero? Both
+are plausible from six epochs of data. Continuing to monitor rather
+than calling either outcome yet.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
