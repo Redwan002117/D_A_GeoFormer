@@ -165,18 +165,32 @@ alongside the existing flood loss, not a replacement architecture.
 
 ### 7. Post-processing: conservative flood threshold + isolated-detection
 filtering
-The SpaceNet-8 overall winner (KARI-AI) reportedly used a deliberately
-conservative flood-probability threshold and **discarded isolated flooded
-building/road detections inside an otherwise non-flooded tile** as likely
-false positives — a pure inference-time heuristic, no retraining needed.
-Cheapest item on this whole list to test, though the source for this
-detail is a secondary summary, not the team's own writeup (their code
-wasn't found in this search) — treat this one as lower-confidence than the
-rest until corroborated.
+**[IMPLEMENTED AND TESTED AGAINST REAL DATA, S12.47 — RESULT: DOES NOT
+HELP HERE.]** `postprocess.py`'s `suppress_isolated_flood_predictions()`,
+opt-in via `evaluate.py --suppress-isolated-flood`. Confirmed directly in
+the winning team's own whitepaper (`Whitepaper_KARI-AI.docx`, found after
+this note was first written — no longer just a secondary summary): "false
+positives for flood detection significantly impact the score... when
+flooded buildings and roads occur at a low rate in the image, they were
+considered false detection." Tested against `checkpoints_v14/best.pt` on
+the real 87-tile held-out split, sweeping the size threshold: flooded F1
+went from 0.5438 (baseline) to as low as 0.4676 at the largest threshold
+tried, monotonically worse as the threshold grows, with only noise-level
+(+0.001-ish) movement at the smallest. See S12.47 for the full sweep table
+and reasoning on why a heuristic that won for KARI-AI doesn't transfer to
+this dataset's flood-extent characteristics. Kept in the codebase
+(correct, tested, and cheap to re-check against a future checkpoint) but
+not enabled anywhere by default.
 
-Source: [SpaceNet 8 winners announcement](https://medium.com/@SpaceNet_Project/the-spacenet-8-flood-detection-challenge-announcing-the-winners-c74d4619195b)
-(secondary summary, not the winning team's own repo — their code was not
-located in this search)
+The SpaceNet-8 overall winner (KARI-AI) also mentioned a conservative
+flood-probability threshold as a separate lever from the isolated-blob
+filtering above — not implemented/tested here yet, a distinct experiment
+from the connected-component approach S12.47 tested.
+
+Sources: `github.com/SpaceNetChallenge/SpaceNet8/01-ohhan777/
+Whitepaper_KARI-AI.docx` (primary source, found after this note was first
+written), [SpaceNet 8 winners announcement](https://medium.com/@SpaceNet_Project/the-spacenet-8-flood-detection-challenge-announcing-the-winners-c74d4619195b)
+(secondary summary, corroborated by the primary source above)
 
 ### 8. Targeted transfer learning from a related task (not just ImageNet)
 5th-place solution reports concrete, measured leaderboard gains from

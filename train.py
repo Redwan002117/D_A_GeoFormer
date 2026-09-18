@@ -200,7 +200,13 @@ class ConfusionAccumulator:
         self.n_images = 0
 
     def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
-        pred = logits.argmax(dim=1)
+        self.update_pred(logits.argmax(dim=1), target)
+
+    def update_pred(self, pred: torch.Tensor, target: torch.Tensor) -> None:
+        """Same accumulation as update(), for callers that already have a
+        final (B, H, W) class-index prediction rather than logits -- e.g.
+        postprocess.py's suppress_isolated_flood_predictions, whose output
+        isn't logits at all (docs/RESEARCH_NOTES.md item 7)."""
         self.n_images += target.shape[0]
         for c in range(self.num_classes):
             pred_c, target_c = pred == c, target == c

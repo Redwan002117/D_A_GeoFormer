@@ -2481,6 +2481,57 @@ distinct lever (and the one an actual challenge winner used). None have
 real-data evidence behind them yet -- that's the natural next step once
 v15 finishes or a spare training slot opens up.
 
+### S12.47 -- tested KARI-AI's isolated-flood-suppression heuristic against
+real data: it does NOT help here, documented honestly rather than dropped
+
+`docs/RESEARCH_NOTES.md` item 7 (a 1st-place team's actual reported fix
+for flood false positives) is now implemented as `postprocess.py`'s
+`suppress_isolated_flood_predictions()` -- and unlike S12.46's three new
+losses, this one is cheap to test immediately: it's pure inference-time
+post-processing on an already-trained checkpoint, no retraining needed. So
+it was tested, directly, against `checkpoints_v14/best.pt` (epoch 51's
+peak, the S12.44-fixed checkpoint) on the real held-out 87-tile validation
+split (`evaluate.py --checkpoint checkpoints_v14/best.pt --data-dir
+real_sn8_dataset_full --image-size 256 --held-out-only --suppress-
+isolated-flood`), sweeping `--suppress-min-fraction`:
+
+| min_component_fraction | flooded F1 | pred images (of 20 GT) |
+|---|---|---|
+| (baseline, no suppression) | 0.5438 | 18 |
+| 0.0001 | 0.5449 | 18 |
+| 0.0002 | 0.5444 | 17 |
+| 0.0005 | 0.5397 | 17 |
+| 0.001 | 0.5107 | 16 |
+| 0.002 | 0.4676 | 13 |
+
+**Result: it hurts, and does so monotonically as the threshold grows.** The
+tiny +0.001-ish gains at the smallest thresholds (0.0001-0.0002) are well
+within likely evaluation noise (the same order of magnitude as the
+epoch-to-epoch noise S12.45 already characterized on this exact metric),
+and every threshold large enough to plausibly matter makes flooded F1
+markedly worse -- at 0.002 (still under 1% of a 256x256 tile), F1 drops
+over 7 points and 7 of 20 flooded tiles stop being detected at all.
+
+**Why it worked for KARI-AI but not here, reasoned honestly, not just
+observed**: their heuristic assumes an isolated small blob is more likely
+noise than a real flood region. That assumption's truth depends on how
+large real flood regions typically are in the training distribution. This
+project's own data characteristics (S12.45: flooded pixels under 1% of the
+801-tile dataset, only ~20-28 of 87 val tiles have any flood coverage at
+all) mean genuine flood extents here are ALREADY small and scattered far
+more often than in whatever regime made the heuristic work for the actual
+challenge winners -- so the same rule that filters their noise filters this
+project's real, rare positive signal instead.
+
+**Kept in the codebase, not reverted** -- `suppress_isolated_flood_
+predictions()`, its 5 tests, and `evaluate.py --suppress-isolated-flood`
+all stay: the mechanism is correct (verified independently by unit test),
+the finding is real and worth having on record, and a future checkpoint
+with different flood-detection characteristics (e.g. after RMI or
+semi-supervised training actually runs) could plausibly interact with it
+differently -- re-testing is one flag, not new code. Not enabled by
+default; no config anywhere sets `--suppress-isolated-flood`.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

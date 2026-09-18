@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from checkpoint_utils import load_checkpoint_model
 from dataset import SyntheticFloodDataset, SpaceNet8Dataset, NUM_CLASSES
 from losses import TverskyLoss
+from postprocess import suppress_isolated_flood_predictions
 from train import ConfusionAccumulator
 
 CLASS_NAMES = ["background", "building", "road", "flooded"]
@@ -36,6 +37,19 @@ def main():
              "uses (SpaceNet8Dataset.split's stable, tile_id-hash-based 10%%) instead of the "
              "full dataset. Omitting this evaluates train+val combined -- an optimistic "
              "number, since it includes tiles the model was trained on.",
+    )
+    p.add_argument(
+        "--suppress-isolated-flood", action="store_true",
+        help="Apply postprocess.py's suppress_isolated_flood_predictions before scoring "
+             "(docs/RESEARCH_NOTES.md item 7, the SpaceNet-8 1st-place team's actual "
+             "false-positive-suppression heuristic) -- a pure inference-time step, no "
+             "retraining, only affects checkpoints with a separate flood head. Only "
+             "meaningful to compare against the same checkpoint WITHOUT this flag.",
+    )
+    p.add_argument(
+        "--suppress-min-fraction", type=float, default=0.0005,
+        help="--suppress-isolated-flood only: a connected blob of predicted-flooded pixels "
+             "smaller than this fraction of a tile's total pixels gets suppressed.",
     )
     args = p.parse_args()
 
@@ -62,6 +76,10 @@ def main():
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False)
     loss_fn = TverskyLoss(num_classes=NUM_CLASSES)
 
+    if args.suppress_isolated_flood:
+        print(f"[postprocess: suppress_isolated_flood_predictions, "
+              f"min_component_fraction={args.suppress_min_fraction}]")
+
     loss_sum, n_batches = 0.0, 0
     acc = ConfusionAccumulator(NUM_CLASSES)
     with torch.no_grad():
@@ -70,7 +88,11 @@ def main():
             out = model(pre, post)
             loss_sum += loss_fn(out["logits"], mask).item()
             n_batches += 1
-            acc.update(out["logits"], mask)
+            if args.suppress_isolated_flood and "flood_logit" in out:
+                pred = suppress_isolated_flood_predictions(out, min_component_fraction=args.suppress_min_fraction)
+                acc.update_pred(pred, mask)
+            else:
+                acc.update(out["logits"], mask)
 
     f1_final = acc.f1()
     coverage = acc.coverage_report()
