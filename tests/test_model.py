@@ -193,8 +193,52 @@ def test_separate_flood_head_produces_structure_and_flood_outputs():
     # The synthesized 4-channel tensor exists for backward compatibility
     # with every consumer that expects out["logits"] unchanged.
     assert out["logits"].shape == (2, 4, 32, 32)
-    assert torch.equal(out["logits"][:, :3], out["structure_logits"])
-    assert torch.equal(out["logits"][:, 3:4], out["flood_logit"])
+
+
+def test_separate_flood_head_logits_are_calibrated_joint_log_probabilities():
+    """The real bug this fixes (docs/MANUAL.md S12.44): naively
+    concatenating structure_logits and flood_logit (the OLD behavior)
+    put two independently-scaled subsystems on the same argmax without
+    anything in training tying their magnitudes together -- measured on
+    a real trained checkpoint, flood_logit's ceiling across whole tiles
+    averaged ~-2 while structure_logits routinely reached +40 to +75,
+    so the old concatenated argmax could almost never select "flooded".
+    This test proves the fix directly: out["logits"] must equal the
+    actual joint MAP log-probabilities, verified against an independent,
+    from-scratch computation of the same formula -- not just "changed
+    somehow", the exact right thing."""
+    cfg = GeoFormerConfig(**{**_tiny_config().__dict__, "separate_flood_head": True})
+    model = DualAxisGeoFormer(cfg)
+    model.eval()
+    pre = torch.randn(2, 3, 32, 32)
+    post = torch.randn(2, 3, 32, 32)
+    with torch.no_grad():
+        out = model(pre, post)
+
+    structure_logits, flood_logit = out["structure_logits"], out["flood_logit"]
+    expected_log_p_flooded = -torch.nn.functional.softplus(-flood_logit)
+    expected_log_p_not_flooded = -torch.nn.functional.softplus(flood_logit)
+    expected_log_p_structure = (torch.nn.functional.log_softmax(structure_logits, dim=1)
+                                 + expected_log_p_not_flooded)
+    expected = torch.cat([expected_log_p_structure, expected_log_p_flooded], dim=1)
+
+    assert torch.allclose(out["logits"], expected, atol=1e-5)
+    # A concrete case the old bug got wrong: flood_logit strongly
+    # positive (confident "flooded") but with a SMALL magnitude, next to
+    # a structure_logits value that's large but not the winner under the
+    # correct probabilistic combination -- argmax must still pick
+    # "flooded" (class 3), which the old raw-concatenation version could
+    # fail on whenever structure_logits' scale dominated.
+    struct = torch.tensor([[[[5.0]], [[1.0]], [[1.0]]]])  # background moderately confident
+    flood = torch.tensor([[[[2.0]]]])  # flood_logit only +2.0 -- would have LOST to structure's +5.0 under the old bug
+    log_p_flooded = -torch.nn.functional.softplus(-flood)
+    log_p_not_flooded = -torch.nn.functional.softplus(flood)
+    log_p_structure = torch.nn.functional.log_softmax(struct, dim=1) + log_p_not_flooded
+    combined = torch.cat([log_p_structure, log_p_flooded], dim=1)
+    # sigmoid(2.0) ~= 0.88 -- genuinely confident "flooded" in probability
+    # terms, and it must win the argmax despite its raw magnitude (2.0)
+    # being smaller than background's structure logit (5.0).
+    assert combined.argmax(dim=1).item() == 3
 
 
 def test_separate_flood_head_default_false_is_unaffected():

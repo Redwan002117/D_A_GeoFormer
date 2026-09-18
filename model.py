@@ -489,14 +489,40 @@ class DualAxisGeoFormer(nn.Module):
             flood_logit = self.flood_head(trunk_out)           # (B, 1, H, W): flooded or not
             out["structure_logits"] = structure_logits
             out["flood_logit"] = flood_logit
-            # A synthesized 4-channel tensor so every EXISTING consumer
-            # (evaluate.py, demo.py, serve.py, ConfusionAccumulator, the
-            # dashboard) keeps working unchanged -- argmax naturally picks
-            # the flooded channel whenever the independent flood head is
-            # more confident than any structure class, the same real
-            # decision the original single softmax made, just no longer
-            # sharing gradients to get there.
-            out["logits"] = torch.cat([structure_logits, flood_logit], dim=1)
+            # BUG THIS FIXES (docs/MANUAL.md S12.44) -- a real, significant
+            # one, found by directly inspecting a trained checkpoint's own
+            # logit magnitudes, not assumed: naively concatenating
+            # structure_logits and flood_logit and taking argmax treats
+            # them as if they live on the same scale, but NOTHING in
+            # training ties them together that way -- structure_logits is
+            # calibrated by a 3-way softmax (background/building/road),
+            # flood_logit by an independent binary comparison (effectively
+            # sigmoid(2*flood_logit)). Measured on a real trained
+            # checkpoint: structure_logits routinely reaches +40 to +75 at
+            # confident pixels, while flood_logit's ceiling across entire
+            # real tiles averaged only about -2 (max seen: +2.6) -- meaning
+            # the old concatenated argmax could ALMOST NEVER select
+            # "flooded" except where every structure class was already
+            # near-zero. Every flooded F1/coverage number reported in this
+            # project since separate_flood_head existed (S12.18 onward)
+            # was computed through this miscalibrated argmax and likely
+            # understated the flood head's true detection capability.
+            #
+            # THE FIX: combine them in PROBABILITY space, not raw-logit
+            # space, so argmax recovers the actual MAP decision under the
+            # joint model P(class=3) = sigmoid(flood_logit), P(class=k in
+            # {0,1,2}) = (1-sigmoid(flood_logit)) * softmax(structure_logits)[k]:
+            #   log P(flooded)     = -softplus(-flood_logit)
+            #   log P(not flooded, class k) = -softplus(flood_logit) + log_softmax(structure_logits)[k]
+            # This tensor is genuinely comparable log-probabilities, not
+            # loosely-named "logits" -- every consumer (evaluate.py,
+            # demo.py, serve.py, ConfusionAccumulator, the dashboard) only
+            # ever calls .argmax(dim=1) on it, so this is a drop-in fix,
+            # not a breaking change to any consumer's interface.
+            log_p_flooded = -F.softplus(-flood_logit)                              # (B, 1, H, W)
+            log_p_not_flooded = -F.softplus(flood_logit)                           # (B, 1, H, W)
+            log_p_structure = F.log_softmax(structure_logits, dim=1) + log_p_not_flooded  # (B, 3, H, W)
+            out["logits"] = torch.cat([log_p_structure, log_p_flooded], dim=1)
         else:
             out["logits"] = self.geo_head(x)  # (B, num_classes, H, W)
 

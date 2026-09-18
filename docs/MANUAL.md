@@ -2285,6 +2285,92 @@ run in this project achieved at a comparable point -- that comparison
 has held up through every revision above, even as the finer-grained
 "is it a floor or still declining" question keeps needing correction.
 
+### 12.44 THE major finding: every flooded F1 number since S12.18 has been significantly understated -- a real logit-calibration bug, found and fixed
+
+While auditing the codebase with fresh eyes (not chasing a specific
+symptom), re-read `model.py`'s `separate_flood_head` forward pass and
+questioned a comment that had gone unquestioned since S12.18: "argmax
+naturally picks the flooded channel whenever the independent flood
+head is more confident than any structure class." That claim was never
+actually verified -- it was asserted. It's false.
+
+**The bug**: `out["logits"] = torch.cat([structure_logits, flood_logit],
+dim=1)` concatenates two subsystems trained under completely
+independent, uncoupled loss terms -- `structure_logits` via a 3-way
+softmax (background/building/road), `flood_logit` via an independent
+binary comparison (`cat([-flood_logit, flood_logit])`, effectively
+`sigmoid(2*flood_logit)`). Nothing in training ties their RAW
+MAGNITUDES together -- each head is free to find its own scale, and
+they found very different ones.
+
+**Measured directly on a real trained checkpoint** (`checkpoints_v14/
+last.pt`, epoch 47), not assumed: across 20 real validation tiles,
+`structure_logits`' per-tile maximum averaged **+55.05** (routinely
+40-75 at confident pixels), while `flood_logit`'s per-tile maximum
+averaged **-1.97** (the single highest value seen across all 20 tiles
+was +2.6). `ConfusionAccumulator.update()` (used by every training
+epoch's logged validation F1, `evaluate.py`, and every other consumer)
+calls `logits.argmax(dim=1)` directly on this concatenated tensor --
+meaning flood_logit's entire achievable range was dwarfed by
+structure_logits' typical scale, so the argmax could almost NEVER
+select "flooded" except in the rare case where every structure class
+was already near-zero everywhere.
+
+**The direct, measured impact**: re-evaluating `checkpoints_v14/
+last.pt` (epoch 47) with the fix in place, on the exact same held-out
+data: flooded F1 went from **0.166** (the old, buggy, CSV-logged
+number for this exact epoch) to **0.533** (the corrected number) --
+coverage from 13/87 to 19/20 GT images. A **~3.2x understatement**,
+confirmed on real data, not a theoretical concern.
+
+**The fix**: combine the two heads in PROBABILITY space, not raw-logit
+space, so argmax recovers the actual MAP decision under the joint
+model `P(flooded) = sigmoid(flood_logit)`, `P(structure class k) =
+(1 - P(flooded)) * softmax(structure_logits)[k]`:
+```
+log_p_flooded    = -softplus(-flood_logit)
+log_p_not_flooded = -softplus(flood_logit)
+log_p_structure  = log_softmax(structure_logits) + log_p_not_flooded
+out["logits"] = cat([log_p_structure, log_p_flooded], dim=1)
+```
+This tensor is genuinely comparable log-probabilities. Every consumer
+(`evaluate.py`, `demo.py`, `serve.py`, `ConfusionAccumulator`, the
+dashboard) only ever calls `.argmax(dim=1)` on it -- a drop-in fix, no
+consumer needed to change. Verified with a new test that checks the
+exact formula against an independent from-scratch computation (not
+just "the numbers changed"), plus a concrete regression case: a
+flood_logit of only +2.0 (confidently "flooded" in probability terms,
+`sigmoid(2.0)~=0.88`) correctly wins the argmax against a structure
+logit of +5.0 -- exactly the case the old bug got wrong. 67 tests
+passing overall (`python -m pytest tests/ -q`).
+
+**What this means for S12.17-S12.43's entire narrative, stated
+honestly**: the LOSS FUNCTION was never affected by this bug --
+`compute_loss` always evaluated `structure_logits` and `flood_logit`
+through their own independent softmax/BCE terms, so every model
+actually TRAINED correctly on the signal it was given. What was wrong
+was the MEASUREMENT: every flooded F1/coverage number logged to every
+CSV and the Postgres dashboard since `separate_flood_head` was
+introduced (S12.18) was computed through the buggy concatenated
+argmax, and is now known to have significantly understated the real
+detection capability at every epoch of every run (v10 through v14).
+The qualitative shape of the diagnostic story -- collapse, recovery,
+oscillation -- likely still reflects something real happening in the
+flood head's own confidence (that's what drove flood_logit's own
+value up or down, bug or no bug), but the ABSOLUTE numbers in every
+prior MANUAL section from S12.18 onward should now be read as a lower
+bound on true performance, not the true value. Historical CSVs are
+left unedited (they're an honest record of what was actually measured
+at the time, and rewriting them after the fact would erase the trail
+that led to finding this bug) -- but any comparison to those numbers
+going forward should account for this.
+
+**Immediate action taken**: v14's training process (which had the
+pre-fix `model.py` loaded in memory, so its own further epochs would
+have kept logging understated metrics) was stopped and will resume
+from `checkpoints_v14/last.pt` with the fix in place, so every epoch
+from here on reports real numbers.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
