@@ -2034,6 +2034,48 @@ without issue across a full real epoch. Continuing to monitor through
 the epoch ~20 window that has been decisive in every prior run in this
 lineage (v10, v12, v13).
 
+### 12.36 v14 epochs 19-21: flooded F1 stays nonzero through the critical window -- first time in this sequence
+
+| epoch | building F1 | road F1 | flooded F1 | flooded coverage |
+|---|---|---|---|---|
+| 18 | 0.608 | 0.442 | 0.448 | 26/87 |
+| 19 | 0.593 | 0.429 | 0.327 | 26/87 |
+| 20 | 0.593 | 0.425 | 0.310 | 28/87 |
+| 21 | 0.591 | 0.435 | **0.301** | **27/87** |
+
+**Real, not-yet-seen-before result**: every prior run in this lineage
+collapsed to exactly 0.000 flooded F1 / 0 coverage at this point --
+v10 at its own epoch 8, v12 at epoch 19, v13 at epoch 20. v14 has not.
+Flooded F1 is declining (0.448 -> 0.327 -> 0.310 -> 0.301) but stays
+genuinely nonzero, and coverage is stable (26-28 of 87), not
+collapsing toward zero the way it did in every earlier run at this
+exact point. This is the first real durability signal across the
+whole v10-v14 sequence.
+
+**flood_head_patience's math, computed from the CSV** (best flooded F1
+was 0.489 at epoch 17; epochs 18-21 are four consecutive epochs
+without beating it): `--flood-head-patience 4` should trigger the
+freeze right at epoch 21. The printed confirmation message can't be
+directly verified yet -- this run was launched without unbuffered
+output (missing `-u`), so stdout is sitting in a buffer not yet
+flushed to disk; only the CSV (written directly, not through the
+buffered stream) is confirmable right now. Epoch 22 onward is the
+real test of what the freeze actually does: does flooded F1 stabilize
+near its current ~0.30 (the freeze doing its job), or does it keep
+declining anyway (confirming the flag's own documented caveat --
+`flood_head` reads from the shared `split_trunk`, which keeps
+evolving from the structure loss after the freeze, so freezing the
+head's own weights may not be enough to insulate it)?
+
+**Not yet attributing this to any one of the four combined levers**
+(flood-head-patience, copy-paste, BCE loss, EMA) -- they were tested
+together for practical reasons (CPU-only, ~600s/epoch), and this
+result cannot yet say which one (or which combination) is responsible.
+If the durability holds through several more epochs, an ablation
+(testing each lever alone against this same starting checkpoint) would
+be the honest next step to find out which one actually matters, rather
+than assuming all four are necessary or crediting one without evidence.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
