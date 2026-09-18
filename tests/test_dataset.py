@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from dataset import SpaceNet8Dataset, SyntheticFloodDataset, _augment_tile
+from dataset import SpaceNet8Dataset, SyntheticFloodDataset, _augment_tile, _copy_paste_flood
 
 
 def _make_fake_index(tmp_path, tile_ids, class_pixel_counts=None):
@@ -166,6 +166,102 @@ def test_augment_tile_mask_values_stay_valid_class_indices():
     for _ in range(20):
         _, _, a_mask = _augment_tile(*_marker_tile(size=16))
         assert set(np.array(a_mask).flatten().tolist()) <= original_values | {0, 3}
+
+
+def _flooded_marker_tile(size=16):
+    """Like _marker_tile, but the flooded region has a DISTINCT, real-
+    looking appearance in pre/post (not just a mask label) -- so a copy-
+    paste test can confirm the pasted pixels are visually real, not just
+    a relabeled mask with unchanged imagery underneath."""
+    pre = Image.new("RGB", (size, size), (10, 10, 10))
+    post = Image.new("RGB", (size, size), (20, 20, 20))
+    mask = Image.new("L", (size, size), 0)
+    pre.paste((0, 0, 200), (0, 0, 4, 4))    # blue-ish "water" in pre
+    post.paste((0, 0, 220), (0, 0, 4, 4))   # water in post too
+    mask.paste(3, (0, 0, 4, 4))             # class 3 (flooded)
+    return pre, post, mask
+
+
+def test_copy_paste_flood_pastes_donors_flooded_region_into_all_three():
+    target_pre = Image.new("RGB", (16, 16), (100, 100, 100))
+    target_post = Image.new("RGB", (16, 16), (100, 100, 100))
+    target_mask = Image.new("L", (16, 16), 0)  # no flooded pixels originally
+    donor_pre, donor_post, donor_mask = _flooded_marker_tile(size=16)
+
+    out_pre, out_post, out_mask = _copy_paste_flood(
+        target_pre, target_post, target_mask, donor_pre, donor_post, donor_mask)
+
+    donor_flood_px = np.array(donor_mask) == 3
+    assert donor_flood_px.any(), "test setup: donor must actually have flooded pixels"
+    # Every donor-flooded pixel must now be flooded in the target's mask...
+    assert (np.array(out_mask)[donor_flood_px] == 3).all()
+    # ...and carry the DONOR's real pixel values in pre/post, not the
+    # target's original (untouched-region) values -- a relabeled mask
+    # over unchanged imagery would be a fabricated label, not real data.
+    assert (np.array(out_pre)[donor_flood_px] == np.array(donor_pre)[donor_flood_px]).all()
+    assert (np.array(out_post)[donor_flood_px] == np.array(donor_post)[donor_flood_px]).all()
+    # Pixels OUTSIDE the donor's flooded region must be untouched.
+    assert (np.array(out_mask)[~donor_flood_px] == 0).all()
+
+
+def test_copy_paste_flood_is_a_noop_when_donor_has_no_flooded_pixels():
+    target_pre, target_post, target_mask = _flooded_marker_tile(size=16)
+    donor_pre = Image.new("RGB", (16, 16), (0, 0, 0))
+    donor_post = Image.new("RGB", (16, 16), (0, 0, 0))
+    donor_mask = Image.new("L", (16, 16), 0)  # no class-3 pixels anywhere
+
+    out_pre, out_post, out_mask = _copy_paste_flood(
+        target_pre, target_post, target_mask, donor_pre, donor_post, donor_mask)
+
+    assert np.array_equal(np.array(out_pre), np.array(target_pre))
+    assert np.array_equal(np.array(out_post), np.array(target_post))
+    assert np.array_equal(np.array(out_mask), np.array(target_mask))
+
+
+def _write_real_tile(base_dir, tile_id, pre, post, mask):
+    for sub in ("pre", "post", "mask"):
+        (base_dir / sub).mkdir(exist_ok=True)
+    pre.save(base_dir / "pre" / f"{tile_id}.png")
+    post.save(base_dir / "post" / f"{tile_id}.png")
+    mask.save(base_dir / "mask" / f"{tile_id}.png")
+    return {"tile_id": tile_id, "pre": f"pre/{tile_id}.png",
+            "post": f"post/{tile_id}.png", "mask": f"mask/{tile_id}.png"}
+
+
+def test_dataset_copy_paste_prob_one_always_introduces_flooded_pixels(tmp_path):
+    """End-to-end through SpaceNet8Dataset.__getitem__, not just the
+    standalone helper -- confirms copy_paste_prob is actually wired up:
+    a tile with NO real flooded pixels, requested from a dataset where
+    exactly one OTHER tile has flooded pixels and copy_paste_prob=1.0,
+    must come back with flooded pixels in its mask every time."""
+    dry_pre, dry_post, dry_mask = Image.new("RGB", (16, 16), (5, 5, 5)), \
+        Image.new("RGB", (16, 16), (5, 5, 5)), Image.new("L", (16, 16), 0)
+    flood_pre, flood_post, flood_mask = _flooded_marker_tile(size=16)
+
+    entries = [
+        _write_real_tile(tmp_path, "dry_tile", dry_pre, dry_post, dry_mask),
+        _write_real_tile(tmp_path, "flood_tile", flood_pre, flood_post, flood_mask),
+    ]
+    (tmp_path / "index.json").write_text(json.dumps(entries))
+
+    ds = SpaceNet8Dataset(str(tmp_path), image_size=16, copy_paste_prob=1.0)
+    _, _, mask_t = ds[0]  # the dry tile -- has no flooded pixels of its own
+    assert (mask_t == 3).any(), "copy_paste_prob=1.0 must introduce flooded pixels into a dry tile"
+
+
+def test_dataset_copy_paste_prob_zero_matches_prior_behavior(tmp_path):
+    dry_pre, dry_post, dry_mask = Image.new("RGB", (16, 16), (5, 5, 5)), \
+        Image.new("RGB", (16, 16), (5, 5, 5)), Image.new("L", (16, 16), 0)
+    flood_pre, flood_post, flood_mask = _flooded_marker_tile(size=16)
+    entries = [
+        _write_real_tile(tmp_path, "dry_tile", dry_pre, dry_post, dry_mask),
+        _write_real_tile(tmp_path, "flood_tile", flood_pre, flood_post, flood_mask),
+    ]
+    (tmp_path / "index.json").write_text(json.dumps(entries))
+
+    ds = SpaceNet8Dataset(str(tmp_path), image_size=16)  # copy_paste_prob defaults to 0.0
+    _, _, mask_t = ds[0]
+    assert not (mask_t == 3).any(), "default (copy_paste_prob=0.0) must never introduce flooded pixels"
 
 
 if __name__ == "__main__":

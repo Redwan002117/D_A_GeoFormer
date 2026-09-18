@@ -1944,6 +1944,73 @@ full diagnostic chain S12.17-S12.33 as evidence of how thoroughly it
 was investigated), and treat more/different flooded-labeled training
 data as the next real lever, not another same-day training-loop tweak.
 
+### 12.34 A formal benchmark, and two more in-hand-data levers before concluding S12.33
+
+S12.33 recommended external data as the next step. Before committing to
+that larger effort, two more genuinely different, well-motivated
+interventions were implemented and tested -- both still using only the
+801 tiles already in hand, per `docs/EXTERNAL_DATA_PLAN.md`'s own
+trigger condition (external data only once in-hand-data levers are
+actually exhausted, not just architecture/loss ones).
+
+**Formal benchmark established**: `evaluate.py --held-out-only` (a
+flag that already existed but hadn't been run as a standalone,
+independently-verified check) against `checkpoints/best.pt` (v12
+epoch 16) on the SAME 87-tile held-out split train.py uses:
+
+| class | F1 | GT imgs | Pred imgs |
+|---|---|---|---|
+| background | 0.9755 | 87 | 87 |
+| building | 0.5610 | 57 | 67 |
+| road | 0.4275 | 80 | 78 |
+| flooded | 0.5354 | 20 | 25 |
+
+This exactly matches v12 epoch 16's own training-time logged numbers
+(cross-verified, not just assumed consistent) -- confirming the
+checkpoint, the dashboard, and this independent evaluation script all
+agree on the same real result. This is now the formal baseline any
+future run is compared against.
+
+**New lever 1 -- freeze `flood_head` at its own peak**:
+`--flood-head-patience K` tracks `val_f1_flooded`'s own best-so-far;
+once K consecutive epochs pass without beating it, `flood_head`'s
+parameters are frozen (`requires_grad=False`) for the rest of training,
+while `structure_head`/backbone/`split_trunk` keep training normally.
+Directly targets the S12.17-S12.33 characterized failure (continued
+training past the peak is what drags flooded down) rather than trying
+to prevent the peak from being reached in the first place. Honest
+caveat, stated in the flag's own help text: `flood_head` reads from
+the SHARED `split_trunk`, which keeps evolving from the structure
+loss's gradients after the freeze -- this does not fully insulate
+flooded's read-out from the trunk's continuing drift, so it is a real
+experiment, not a guaranteed fix.
+
+**New lever 2 -- copy-paste augmentation**: `--copy-paste-prob P`
+pastes a randomly-chosen donor tile's entire flooded-pixel footprint
+(pre, post, AND mask together, at the same coordinates) onto the
+current tile before training on it, manufacturing more flooded-pixel
+exposure per epoch from the SAME 801 tiles (Ghiasi et al. 2021,
+"Simple Copy-Paste is a Strong Data Augmentation Method") -- directly
+tests whether S12.33's "data-exposure" reading is right (this should
+help) or whether it's really "not enough DISTINCT real examples"
+(reusing the same 198 flooded tiles' own content can't manufacture
+that, so this wouldn't help much). 198 of 801 tiles have flooded
+pixels to donate from, confirmed.
+
+**Verified, not just written**: 4 new tests for copy-paste (the
+donor's real pixel values land in pre/post, not just a relabeled mask
+over unchanged imagery; a no-flood donor is a correct no-op; the
+dataset-level wiring actually introduces flooded pixels at
+`copy_paste_prob=1.0` and never does at the default 0.0) plus an
+end-to-end real-data smoke test combining both new flags with the
+full existing stack (augment, oversampling, class weights, separate
+head, BCE) -- started clean, no crash, correct config printed. 66
+tests passing overall (`python -m pytest tests/ -q`).
+
+v14 (next) combines both new levers with the full proven stack, resumed
+from `checkpoints/best.pt` (v12 epoch 16, this section's own formal
+benchmark) -- reported once real epochs land.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

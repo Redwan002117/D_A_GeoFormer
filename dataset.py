@@ -33,6 +33,43 @@ from torch.utils.data import Dataset
 NUM_CLASSES = 4  # background, building, road, flooded (building or road)
 
 
+def _copy_paste_flood(pre: Image.Image, post: Image.Image, mask: Image.Image,
+                       donor_pre: Image.Image, donor_post: Image.Image, donor_mask: Image.Image):
+    """Pastes the donor tile's ENTIRE flooded-pixel footprint onto the
+    target tile at the same pixel coordinates, in pre, post, AND mask
+    together, so the three stay consistent (a pasted "flooded" mask
+    pixel must actually show flooded-looking pixels in both images, not
+    just a relabeled mask -- otherwise this would just be a more
+    elaborate way to feed the model a wrong label).
+
+    WHY (docs/MANUAL.md S12.34): S12.17-S12.33 characterized flooded's
+    collapse as resistant to four different architecture/loss-level
+    fixes, each converging on nearly the same training point --
+    consistent with a training-DATA limit (not enough real flooded-
+    pixel exposure per epoch), not a model-side one. Copy-paste
+    (Ghiasi et al. 2021, "Simple Copy-Paste is a Strong Data
+    Augmentation Method") tests that specific hypothesis using ONLY
+    the 801 tiles already in hand -- no new data collection -- by
+    directly manufacturing more flooded-pixel exposure per epoch than
+    the real geography alone provides. If this measurably delays or
+    prevents the collapse, that's evidence FOR the "not enough
+    exposure" reading; if it doesn't, that points more toward "not
+    enough distinct real examples" specifically (which copy-paste,
+    reusing the same 198 flooded tiles' own content, can't manufacture).
+    """
+    donor_mask_arr = np.array(donor_mask)
+    flood_pixels = donor_mask_arr == 3
+    if not flood_pixels.any():
+        return pre, post, mask  # donor had no flooded pixels after all -- no-op, not an error
+    paste_mask_img = Image.fromarray((flood_pixels * 255).astype(np.uint8))
+    pre = Image.composite(donor_pre, pre, paste_mask_img)
+    post = Image.composite(donor_post, post, paste_mask_img)
+    mask_arr = np.array(mask).copy()
+    mask_arr[flood_pixels] = 3
+    mask = Image.fromarray(mask_arr)
+    return pre, post, mask
+
+
 def _augment_tile(pre: Image.Image, post: Image.Image, mask: Image.Image):
     """Random dihedral-group (D4) transform applied IDENTICALLY to pre,
     post, and mask, so the three stay spatially aligned.
@@ -168,7 +205,8 @@ class SpaceNet8Dataset(Dataset):
     before pointing `--data-dir` at a directory built this way.
     """
 
-    def __init__(self, data_dir: str, image_size: int = 256, augment: bool = False):
+    def __init__(self, data_dir: str, image_size: int = 256, augment: bool = False,
+                 copy_paste_prob: float = 0.0):
         self.data_dir = Path(data_dir)
         self.image_size = image_size
         # Default False -- exact prior behavior for existing callers/tests.
@@ -178,6 +216,10 @@ class SpaceNet8Dataset(Dataset):
         # builds a second, augment=False instance for val instead of
         # reusing one instance for both splits).
         self.augment = augment
+        # Default 0.0 -- exact prior behavior. Only meant for the TRAIN
+        # split, same reasoning as `augment` above -- val must stay
+        # untouched so held-out numbers mean what they say.
+        self.copy_paste_prob = copy_paste_prob
         index_path = self.data_dir / "index.json"
         if not index_path.exists():
             raise FileNotFoundError(
@@ -187,6 +229,21 @@ class SpaceNet8Dataset(Dataset):
             )
         with open(index_path) as f:
             self.entries = json.load(f)
+        # Precomputed once, only when actually needed -- reading every
+        # mask's array at init is real I/O this loader otherwise never
+        # does eagerly, so it's skipped entirely when copy-paste is off
+        # (the default, and every non-train-split instance).
+        self._flooded_donor_indices: list[int] | None = None
+        if self.copy_paste_prob > 0:
+            self._flooded_donor_indices = [
+                i for i, entry in enumerate(self.entries)
+                if (np.array(Image.open(self.data_dir / entry["mask"])) == 3).any()
+            ]
+            if not self._flooded_donor_indices:
+                raise ValueError(
+                    "copy_paste_prob > 0 but no tile in this dataset has any flooded "
+                    "pixels to donate -- copy-paste has nothing real to paste from."
+                )
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -199,6 +256,17 @@ class SpaceNet8Dataset(Dataset):
             (self.image_size, self.image_size))
         mask = Image.open(self.data_dir / entry["mask"]).resize(
             (self.image_size, self.image_size), Image.NEAREST)
+
+        if self._flooded_donor_indices and random.random() < self.copy_paste_prob:
+            donor_idx = random.choice(self._flooded_donor_indices)
+            donor_entry = self.entries[donor_idx]
+            donor_pre = Image.open(self.data_dir / donor_entry["pre"]).convert("RGB").resize(
+                (self.image_size, self.image_size))
+            donor_post = Image.open(self.data_dir / donor_entry["post"]).convert("RGB").resize(
+                (self.image_size, self.image_size))
+            donor_mask = Image.open(self.data_dir / donor_entry["mask"]).resize(
+                (self.image_size, self.image_size), Image.NEAREST)
+            pre, post, mask = _copy_paste_flood(pre, post, mask, donor_pre, donor_post, donor_mask)
 
         if self.augment:
             pre, post, mask = _augment_tile(pre, post, mask)

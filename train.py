@@ -228,8 +228,9 @@ def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
         # held-out numbers stop being comparable epoch to epoch. Sharing
         # one instance would mean either both splits augment or neither
         # does; this keeps them independently controlled.
-        train_source = SpaceNet8Dataset(args.data_dir, image_size=args.image_size, augment=args.augment) \
-            if args.augment else full
+        train_source = SpaceNet8Dataset(args.data_dir, image_size=args.image_size, augment=args.augment,
+                                         copy_paste_prob=args.copy_paste_prob) \
+            if (args.augment or args.copy_paste_prob > 0) else full
         train_ds = torch.utils.data.Subset(train_source, train_idx)
         val_ds = torch.utils.data.Subset(full, val_idx)
 
@@ -330,6 +331,18 @@ def main():
                          "Satellite imagery has no canonical orientation -- this project's real-data "
                          "training had no geometric augmentation at all before this flag existed. "
                          "See docs/MANUAL.md S12.16.")
+    p.add_argument("--copy-paste-prob", type=float, default=0.0,
+                    help="Real data only (--data-dir), TRAIN split only: probability per tile of "
+                         "pasting a randomly-chosen OTHER tile's entire flooded-pixel footprint "
+                         "(pre, post, AND mask together, at the same pixel coordinates) onto this "
+                         "tile before training on it. 0.0 (default) disables it -- exact prior "
+                         "behavior. Motivated by docs/MANUAL.md S12.33: four different model/loss-"
+                         "level fixes for flooded's collapse all converged on nearly the same "
+                         "training point, evidence for a data-exposure limit rather than a "
+                         "model-side one -- this manufactures more flooded-pixel exposure per "
+                         "epoch from the SAME 801 tiles already in hand (Ghiasi et al. 2021, "
+                         "'Simple Copy-Paste is a Strong Data Augmentation Method'), testing that "
+                         "hypothesis without waiting on new data collection.")
     p.add_argument("--freeze-backbone-epochs", type=int, default=0,
                     help="geoformer + --pretrained-backbone only: freeze the pretrained backbone's "
                          "weights for this many epochs before unfreezing. Standard transfer-learning "
@@ -409,6 +422,22 @@ def main():
                          "fresh, non-saturated starting point, not just a stronger pull on the "
                          "same starting point. No effect without --resume (a fresh model's "
                          "flood_head is already randomly initialized).")
+    p.add_argument("--flood-head-patience", type=int, default=None,
+                    help="--separate-flood-head only: once val_f1_flooded hasn't beaten its own "
+                         "best-so-far for this many consecutive epochs, freeze flood_head's "
+                         "parameters (requires_grad=False) for the REST of training -- it stops "
+                         "learning at (approximately) its own peak instead of continuing to train "
+                         "into the collapse S12.17-S12.33 characterized, while structure_head/"
+                         "backbone/split_trunk keep training normally. None (default) disables "
+                         "this -- exact prior behavior. IMPORTANT CAVEAT, stated honestly rather "
+                         "than oversold: flood_head reads from split_trunk, which is SHARED with "
+                         "structure_head and keeps training after the freeze (driven by the "
+                         "structure loss) -- freezing flood_head does not fully insulate it from "
+                         "the trunk's continuing evolution, so this is a real experiment, not a "
+                         "guaranteed fix. min_f1 checkpoint selection already protects the best "
+                         "checkpoint from being lost either way; this additionally tries to keep "
+                         "TRAINING itself from moving away from a good flood state while still "
+                         "letting building/road/background keep improving.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -606,6 +635,10 @@ def main():
         parent_run_name=ckpt.get("run_name") if args.resume else None,
     )
 
+    best_flood_f1_so_far = -1.0
+    epochs_since_flood_f1_improved = 0
+    flood_head_frozen = False
+
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
         model.train()
@@ -658,6 +691,21 @@ def main():
         f1_final = acc.f1()
         coverage = acc.coverage_report()
         dt = time.time() - t0
+
+        if args.flood_head_patience is not None and not flood_head_frozen:
+            flood_f1_this_epoch = f1_final[3] if f1_final[3] is not None else -1.0
+            if flood_f1_this_epoch > best_flood_f1_so_far:
+                best_flood_f1_so_far = flood_f1_this_epoch
+                epochs_since_flood_f1_improved = 0
+            else:
+                epochs_since_flood_f1_improved += 1
+            if epochs_since_flood_f1_improved >= args.flood_head_patience:
+                for p_ in model.flood_head.parameters():
+                    p_.requires_grad_(False)
+                flood_head_frozen = True
+                print(f"  -> flood_head FROZEN (epoch {epoch + 1}): flooded F1 hasn't beaten "
+                      f"{best_flood_f1_so_far:.4f} for {args.flood_head_patience} epochs "
+                      f"(docs/MANUAL.md S12.34)")
 
         if raw_state_for_restore is not None:
             model.load_state_dict(raw_state_for_restore)
