@@ -2798,6 +2798,39 @@ the two Tier-1/Tier-2 items most directly aimed at the actual bottleneck
 (flooded pixels under 1% of the dataset) rather than tuning around it --
 both still need a real training slot to show whether they help.
 
+### S12.52 -- v15 finished: clean evaluation, S12.47 re-confirmed, v16 launched
+
+**v15 completed all 150 epochs.** A clean `evaluate.py` pass against the
+real 87-tile held-out split (not just the training CSV) on
+`checkpoints_v15/best.pt` (epoch 136):
+
+| Class | v14 best.pt | v15 best.pt | Change |
+|---|---|---|---|
+| background | 0.9782 | 0.9796 | +0.0014 |
+| building | 0.6200 | 0.6382 | +0.0182 |
+| road | 0.4600 | 0.4732 | +0.0132 |
+| flooded | 0.5438 | 0.5614 | +0.0176 |
+
+**Every class improved, not just flooded** -- unfreezing the flood head
+(S12.45) let the shared trunk keep learning broadly, not just the one
+metric the fix directly targeted. This is the best real-data checkpoint
+this project has produced.
+
+**S12.47's isolated-flood-suppression finding re-tested on this new
+checkpoint, as planned when it was first documented** (`--suppress-
+isolated-flood`, sweeping `--suppress-min-fraction`): 0.5615 (essentially
+unchanged) at 0.0001, 0.5455 (-0.016) at 0.0005, 0.4974 (-0.064) at 0.001
+-- the same monotonically-worse-as-threshold-grows pattern found on v14's
+checkpoint. **Conclusion re-confirmed, not checkpoint-specific**: this
+project's real flood extents are small enough on their own that the
+heuristic that helped KARI-AI's data still doesn't transfer here.
+Continues to stay in the codebase, tested, not enabled by default.
+
+**v16 launched** immediately after evaluation, resuming from
+`checkpoints_v15/best.pt` with `--flood-rmi-weight 0.3` added (exact
+command in S12.49) -- the first real-data test of the RMI loss port from
+S12.46.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
