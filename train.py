@@ -261,8 +261,8 @@ def build_dataloaders(args) -> tuple[DataLoader, DataLoader]:
         # one instance would mean either both splits augment or neither
         # does; this keeps them independently controlled.
         train_source = SpaceNet8Dataset(args.data_dir, image_size=args.image_size, augment=args.augment,
-                                         copy_paste_prob=args.copy_paste_prob) \
-            if (args.augment or args.copy_paste_prob > 0) else full
+                                         copy_paste_prob=args.copy_paste_prob, mosaic_prob=args.mosaic_prob) \
+            if (args.augment or args.copy_paste_prob > 0 or args.mosaic_prob > 0) else full
         train_ds = torch.utils.data.Subset(train_source, train_idx)
         val_ds = torch.utils.data.Subset(full, val_idx)
 
@@ -375,6 +375,24 @@ def main():
                          "epoch from the SAME 801 tiles already in hand (Ghiasi et al. 2021, "
                          "'Simple Copy-Paste is a Strong Data Augmentation Method'), testing that "
                          "hypothesis without waiting on new data collection.")
+    p.add_argument("--mosaic-prob", type=float, default=0.0,
+                    help="Real data only (--data-dir), TRAIN split only: probability per tile of "
+                         "compositing it with its real, physically-adjacent right/down/diagonal "
+                         "neighbors (same AOI, same tiling grid) into one 2x2 mosaic, then resizing "
+                         "back down to --image-size -- 4 real tiles' worth of flood-labeled pixels "
+                         "compressed into the crop size the model always sees, instead of diluted "
+                         "across 4 separate low-flood-density samples. 0.0 (default) disables it -- "
+                         "exact prior behavior. Only tiles with a complete set of neighbors are "
+                         "eligible anchors (~40%% of this dataset); an ineligible tile silently "
+                         "falls back to normal loading for that sample. Mutually exclusive with "
+                         "--copy-paste-prob per sample (mosaic takes priority when both trigger) -- "
+                         "one flood-density augmentation at a time, so any effect stays attributable. "
+                         "Distinct from copy-paste (docs/RESEARCH_NOTES.md item 2): copy-paste pastes "
+                         "an unrelated donor tile's flood footprint onto a possibly-unrelated "
+                         "background; mosaic uses tiles that are genuinely next to each other on the "
+                         "ground, mechanically increasing flood density without inventing any pixel "
+                         "that wasn't already real imagery. This is the SpaceNet-8 5th-place "
+                         "solution's own single most-cited fix for flood-class data scarcity.")
     p.add_argument("--freeze-backbone-epochs", type=int, default=0,
                     help="geoformer + --pretrained-backbone only: freeze the pretrained backbone's "
                          "weights for this many epochs before unfreezing. Standard transfer-learning "

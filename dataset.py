@@ -70,6 +70,83 @@ def _copy_paste_flood(pre: Image.Image, post: Image.Image, mask: Image.Image,
     return pre, post, mask
 
 
+def parse_tile_grid_id(tile_id: str) -> tuple[str, int, int] | None:
+    """A SpaceNet-8 tile_id encodes its real position in the source AOI's
+    tiling grid: `<aoi>_<row>_<col>` (Germany, e.g. "0_41_58") or
+    `<AOI_Name>__<aoi>_<row>_<col>` (Louisiana-East, e.g.
+    "Louisiana-East_Training_Public__2_16_49"). Returns (aoi_key, row, col)
+    so genuinely adjacent tiles can be found for mosaicing -- adjacency
+    here means real, physical adjacency on the ground, not just "two
+    tiles that happen to sit next to each other in index.json". Returns
+    None for a tile_id that doesn't match this pattern (a handful don't;
+    those simply aren't eligible as a mosaic anchor)."""
+    parts = tile_id.rsplit("_", 2)
+    if len(parts) != 3:
+        return None
+    aoi_key, row_str, col_str = parts
+    try:
+        return aoi_key, int(row_str), int(col_str)
+    except ValueError:
+        return None
+
+
+def find_mosaic_groups(entries: list[dict]) -> dict[int, tuple[int, int, int]]:
+    """For every tile that has real, physically-adjacent right/down/
+    diagonal neighbors in the same AOI, map its index -> (right_idx,
+    down_idx, diag_idx). Only about ~40% of tiles have a complete 2x2
+    neighborhood (edge tiles and gaps in the downloaded AOI coverage don't)
+    -- those simply aren't eligible as a mosaic anchor, which is fine,
+    this only needs SOME eligible anchors, not all of them.
+
+    WHY THIS EXISTS (docs/RESEARCH_NOTES.md item 2): the SpaceNet-8
+    5th-place solution's single most-cited fix for flood-class data
+    scarcity was joining 4 REAL adjacent tiles into one composite training
+    sample -- every resulting pixel is still real imagery, just more
+    flood-dense per sample than any single 256x256 crop happens to be.
+    Different from --copy-paste-prob (which pastes an unrelated donor
+    tile's flood footprint onto a possibly-unrelated background): mosaic
+    uses tiles that are actually next to each other on the ground.
+    """
+    by_coord: dict[tuple[str, int, int], int] = {}
+    for i, entry in enumerate(entries):
+        parsed = parse_tile_grid_id(entry.get("tile_id", ""))
+        if parsed is not None:
+            by_coord[parsed] = i
+
+    groups: dict[int, tuple[int, int, int]] = {}
+    for (aoi_key, row, col), i in by_coord.items():
+        right = by_coord.get((aoi_key, row, col + 1))
+        down = by_coord.get((aoi_key, row + 1, col))
+        diag = by_coord.get((aoi_key, row + 1, col + 1))
+        if right is not None and down is not None and diag is not None:
+            groups[i] = (right, down, diag)
+    return groups
+
+
+def _mosaic_tiles(quad_images: list[tuple[Image.Image, Image.Image, Image.Image]],
+                   image_size: int) -> tuple[Image.Image, Image.Image, Image.Image]:
+    """Compose 4 real, adjacent tiles (top-left, top-right, bottom-left,
+    bottom-right order) into one 2x2 grid, then resize back down to
+    image_size -- the resize is what actually increases flood-pixel
+    DENSITY per training sample: 4 tiles' worth of real flood-labeled
+    pixels get compressed into the same crop size the model always sees,
+    rather than diluted across 4 separate low-flood-density samples.
+    Mask resize uses NEAREST (discrete class indices; any other
+    interpolation would invent invalid in-between class values)."""
+    half = image_size  # each source tile is already resized to image_size before mosaicing
+    canvas_pre = Image.new("RGB", (half * 2, half * 2))
+    canvas_post = Image.new("RGB", (half * 2, half * 2))
+    canvas_mask = Image.new("L", (half * 2, half * 2))
+    for (pre, post, mask), (x, y) in zip(quad_images, [(0, 0), (half, 0), (0, half), (half, half)]):
+        canvas_pre.paste(pre, (x, y))
+        canvas_post.paste(post, (x, y))
+        canvas_mask.paste(mask, (x, y))
+    pre = canvas_pre.resize((image_size, image_size))
+    post = canvas_post.resize((image_size, image_size))
+    mask = canvas_mask.resize((image_size, image_size), Image.NEAREST)
+    return pre, post, mask
+
+
 def _augment_tile(pre: Image.Image, post: Image.Image, mask: Image.Image):
     """Random dihedral-group (D4) transform applied IDENTICALLY to pre,
     post, and mask, so the three stay spatially aligned.
@@ -206,7 +283,7 @@ class SpaceNet8Dataset(Dataset):
     """
 
     def __init__(self, data_dir: str, image_size: int = 256, augment: bool = False,
-                 copy_paste_prob: float = 0.0):
+                 copy_paste_prob: float = 0.0, mosaic_prob: float = 0.0):
         self.data_dir = Path(data_dir)
         self.image_size = image_size
         # Default False -- exact prior behavior for existing callers/tests.
@@ -220,6 +297,11 @@ class SpaceNet8Dataset(Dataset):
         # split, same reasoning as `augment` above -- val must stay
         # untouched so held-out numbers mean what they say.
         self.copy_paste_prob = copy_paste_prob
+        # Default 0.0 -- exact prior behavior. Only meant for the TRAIN
+        # split, same reasoning as copy_paste_prob above (docs/
+        # RESEARCH_NOTES.md item 2 -- see find_mosaic_groups()'s docstring
+        # for what this actually does and why).
+        self.mosaic_prob = mosaic_prob
         index_path = self.data_dir / "index.json"
         if not index_path.exists():
             raise FileNotFoundError(
@@ -244,28 +326,49 @@ class SpaceNet8Dataset(Dataset):
                     "copy_paste_prob > 0 but no tile in this dataset has any flooded "
                     "pixels to donate -- copy-paste has nothing real to paste from."
                 )
+        self._mosaic_groups: dict[int, tuple[int, int, int]] | None = None
+        if self.mosaic_prob > 0:
+            self._mosaic_groups = find_mosaic_groups(self.entries)
+            if not self._mosaic_groups:
+                raise ValueError(
+                    "mosaic_prob > 0 but no tile in this dataset has a full set of "
+                    "physically-adjacent neighbors -- mosaicing has nothing real to compose."
+                )
 
     def __len__(self) -> int:
         return len(self.entries)
 
-    def __getitem__(self, idx: int):
-        entry = self.entries[idx]
+    def _load_tile(self, entry: dict) -> tuple[Image.Image, Image.Image, Image.Image]:
         pre = Image.open(self.data_dir / entry["pre"]).convert("RGB").resize(
             (self.image_size, self.image_size))
         post = Image.open(self.data_dir / entry["post"]).convert("RGB").resize(
             (self.image_size, self.image_size))
         mask = Image.open(self.data_dir / entry["mask"]).resize(
             (self.image_size, self.image_size), Image.NEAREST)
+        return pre, post, mask
 
-        if self._flooded_donor_indices and random.random() < self.copy_paste_prob:
+    def __getitem__(self, idx: int):
+        entry = self.entries[idx]
+        pre, post, mask = self._load_tile(entry)
+
+        # Mutually exclusive with copy-paste below -- one flood-density
+        # augmentation per sample, not both stacked, to keep what's
+        # actually driving a training-signal change unambiguous.
+        did_mosaic = False
+        if (self._mosaic_groups is not None and idx in self._mosaic_groups
+                and random.random() < self.mosaic_prob):
+            right_idx, down_idx, diag_idx = self._mosaic_groups[idx]
+            quad = [(pre, post, mask),
+                    self._load_tile(self.entries[right_idx]),
+                    self._load_tile(self.entries[down_idx]),
+                    self._load_tile(self.entries[diag_idx])]
+            pre, post, mask = _mosaic_tiles(quad, self.image_size)
+            did_mosaic = True
+
+        if not did_mosaic and self._flooded_donor_indices and random.random() < self.copy_paste_prob:
             donor_idx = random.choice(self._flooded_donor_indices)
             donor_entry = self.entries[donor_idx]
-            donor_pre = Image.open(self.data_dir / donor_entry["pre"]).convert("RGB").resize(
-                (self.image_size, self.image_size))
-            donor_post = Image.open(self.data_dir / donor_entry["post"]).convert("RGB").resize(
-                (self.image_size, self.image_size))
-            donor_mask = Image.open(self.data_dir / donor_entry["mask"]).resize(
-                (self.image_size, self.image_size), Image.NEAREST)
+            donor_pre, donor_post, donor_mask = self._load_tile(donor_entry)
             pre, post, mask = _copy_paste_flood(pre, post, mask, donor_pre, donor_post, donor_mask)
 
         if self.augment:

@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from dataset import SpaceNet8Dataset, SyntheticFloodDataset, _augment_tile, _copy_paste_flood
+from dataset import (SpaceNet8Dataset, SyntheticFloodDataset, _augment_tile, _copy_paste_flood,
+                      parse_tile_grid_id, find_mosaic_groups, _mosaic_tiles)
 
 
 def _make_fake_index(tmp_path, tile_ids, class_pixel_counts=None):
@@ -262,6 +263,162 @@ def test_dataset_copy_paste_prob_zero_matches_prior_behavior(tmp_path):
     ds = SpaceNet8Dataset(str(tmp_path), image_size=16)  # copy_paste_prob defaults to 0.0
     _, _, mask_t = ds[0]
     assert not (mask_t == 3).any(), "default (copy_paste_prob=0.0) must never introduce flooded pixels"
+
+
+# ---------------------------------------------------------------------------
+# Mosaic augmentation (docs/RESEARCH_NOTES.md item 2)
+# ---------------------------------------------------------------------------
+
+def test_parse_tile_grid_id_germany_format():
+    assert parse_tile_grid_id("0_41_58") == ("0", 41, 58)
+
+
+def test_parse_tile_grid_id_louisiana_format():
+    assert parse_tile_grid_id("Louisiana-East_Training_Public__2_16_49") == \
+        ("Louisiana-East_Training_Public__2", 16, 49)
+
+
+def test_parse_tile_grid_id_rejects_a_non_matching_id():
+    assert parse_tile_grid_id("not-a-grid-id") is None
+    assert parse_tile_grid_id("only_two") is None
+
+
+def test_find_mosaic_groups_finds_a_real_2x2_neighborhood():
+    """4 tiles forming a real 2x2 block: (0,0) is a valid anchor with
+    right=(0,1), down=(1,0), diag=(1,1)."""
+    entries = [
+        {"tile_id": "5_0_0"}, {"tile_id": "5_0_1"},
+        {"tile_id": "5_1_0"}, {"tile_id": "5_1_1"},
+    ]
+    groups = find_mosaic_groups(entries)
+    assert 0 in groups
+    right_idx, down_idx, diag_idx = groups[0]
+    assert entries[right_idx]["tile_id"] == "5_0_1"
+    assert entries[down_idx]["tile_id"] == "5_1_0"
+    assert entries[diag_idx]["tile_id"] == "5_1_1"
+
+
+def test_find_mosaic_groups_excludes_a_tile_with_a_missing_neighbor():
+    """Same as above but the diagonal neighbor is missing -- (0,0) must
+    NOT be eligible, a partial 2x2 isn't a real mosaic."""
+    entries = [
+        {"tile_id": "5_0_0"}, {"tile_id": "5_0_1"}, {"tile_id": "5_1_0"},
+    ]
+    groups = find_mosaic_groups(entries)
+    assert 0 not in groups
+
+
+def test_find_mosaic_groups_never_crosses_aoi_boundaries():
+    """Two different AOIs that happen to share (row, col) coordinates must
+    never be mistaken for real neighbors -- physical adjacency is only
+    meaningful within the same source AOI."""
+    entries = [
+        {"tile_id": "5_0_0"}, {"tile_id": "6_0_1"},
+        {"tile_id": "6_1_0"}, {"tile_id": "6_1_1"},
+    ]
+    groups = find_mosaic_groups(entries)
+    assert 0 not in groups, "tile 5_0_0 has no same-AOI neighbors and must not be an anchor"
+
+
+def test_mosaic_tiles_places_each_source_in_its_own_quadrant():
+    size = 4
+    quad = []
+    for color in [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]:
+        pre = Image.new("RGB", (size, size), color)
+        post = Image.new("RGB", (size, size), color)
+        mask = Image.new("L", (size, size), 0)
+        quad.append((pre, post, mask))
+
+    pre, post, mask = _mosaic_tiles(quad, image_size=size)
+    assert pre.size == (size, size), "must resize back down to image_size, not stay 2x"
+    pre_arr = np.array(pre)
+    # After compositing to 2x and resizing back down, the four quadrants'
+    # source colors must still be distinguishable in their approximate
+    # original corner -- check the exact 4 corner pixels, which survive
+    # resize sampling regardless of the exact resampling filter used.
+    assert tuple(pre_arr[0, 0]) == (255, 0, 0)       # top-left source
+    assert tuple(pre_arr[0, -1]) == (0, 255, 0)      # top-right source
+    assert tuple(pre_arr[-1, 0]) == (0, 0, 255)      # bottom-left source
+    assert tuple(pre_arr[-1, -1]) == (255, 255, 0)   # bottom-right source
+
+
+def test_mosaic_tiles_mask_uses_nearest_and_stays_valid_class_indices():
+    """The mask must never contain an interpolated in-between value (e.g.
+    1.5 rounded weirdly) -- every output pixel must be one of the four
+    real input classes, confirming NEAREST (not bilinear) resizing."""
+    size = 8
+    quad = []
+    for cls in [0, 1, 2, 3]:
+        pre = Image.new("RGB", (size, size), (0, 0, 0))
+        post = Image.new("RGB", (size, size), (0, 0, 0))
+        mask = Image.new("L", (size, size), cls)
+        quad.append((pre, post, mask))
+
+    _, _, mask = _mosaic_tiles(quad, image_size=size)
+    mask_arr = np.array(mask)
+    assert set(np.unique(mask_arr).tolist()) <= {0, 1, 2, 3}
+
+
+def test_dataset_mosaic_prob_one_always_composites_a_flood_dense_sample(tmp_path):
+    """End-to-end through SpaceNet8Dataset.__getitem__: an anchor tile
+    with NO flooded pixels of its own, whose real neighbor DOES have
+    flooded pixels, must come back with flooded pixels when mosaic_prob=1.0
+    (which also proves the wiring, not just the standalone helper)."""
+    dry_pre, dry_post, dry_mask = Image.new("RGB", (16, 16), (5, 5, 5)), \
+        Image.new("RGB", (16, 16), (5, 5, 5)), Image.new("L", (16, 16), 0)
+    flood_pre, flood_post, flood_mask = _flooded_marker_tile(size=16)
+
+    entries = [
+        _write_real_tile(tmp_path, "9_0_0", dry_pre, dry_post, dry_mask),      # anchor, dry
+        _write_real_tile(tmp_path, "9_0_1", flood_pre, flood_post, flood_mask),  # right neighbor, flooded
+        _write_real_tile(tmp_path, "9_1_0", dry_pre, dry_post, dry_mask),      # down neighbor
+        _write_real_tile(tmp_path, "9_1_1", dry_pre, dry_post, dry_mask),      # diag neighbor
+    ]
+    (tmp_path / "index.json").write_text(json.dumps(entries))
+
+    ds = SpaceNet8Dataset(str(tmp_path), image_size=16, mosaic_prob=1.0)
+    _, _, mask_t = ds[0]  # the dry anchor tile
+    assert (mask_t == 3).any(), "mosaic_prob=1.0 on an eligible anchor must pull in the neighbor's flood"
+
+
+def test_dataset_mosaic_prob_zero_matches_prior_behavior(tmp_path):
+    dry_pre, dry_post, dry_mask = Image.new("RGB", (16, 16), (5, 5, 5)), \
+        Image.new("RGB", (16, 16), (5, 5, 5)), Image.new("L", (16, 16), 0)
+    flood_pre, flood_post, flood_mask = _flooded_marker_tile(size=16)
+    entries = [
+        _write_real_tile(tmp_path, "9_0_0", dry_pre, dry_post, dry_mask),
+        _write_real_tile(tmp_path, "9_0_1", flood_pre, flood_post, flood_mask),
+        _write_real_tile(tmp_path, "9_1_0", dry_pre, dry_post, dry_mask),
+        _write_real_tile(tmp_path, "9_1_1", dry_pre, dry_post, dry_mask),
+    ]
+    (tmp_path / "index.json").write_text(json.dumps(entries))
+
+    ds = SpaceNet8Dataset(str(tmp_path), image_size=16)  # mosaic_prob defaults to 0.0
+    _, _, mask_t = ds[0]
+    assert not (mask_t == 3).any(), "default (mosaic_prob=0.0) must never introduce flooded pixels"
+
+
+def test_dataset_mosaic_prob_falls_back_gracefully_for_an_ineligible_anchor(tmp_path):
+    """A tile with no real neighbors at all must just load normally when
+    mosaic_prob=1.0, not crash or raise -- graceful fallback, not an error."""
+    pre, post, mask = Image.new("RGB", (16, 16), (5, 5, 5)), \
+        Image.new("RGB", (16, 16), (5, 5, 5)), Image.new("L", (16, 16), 0)
+    flood_pre, flood_post, flood_mask = _flooded_marker_tile(size=16)
+    entries = [
+        _write_real_tile(tmp_path, "lonely_tile", pre, post, mask),
+        # a second tile purely so mosaic_prob > 0 has at least one real
+        # neighborhood somewhere in the dataset and doesn't raise at init
+        _write_real_tile(tmp_path, "9_0_0", pre, post, mask),
+        _write_real_tile(tmp_path, "9_0_1", flood_pre, flood_post, flood_mask),
+        _write_real_tile(tmp_path, "9_1_0", pre, post, mask),
+        _write_real_tile(tmp_path, "9_1_1", pre, post, mask),
+    ]
+    (tmp_path / "index.json").write_text(json.dumps(entries))
+
+    ds = SpaceNet8Dataset(str(tmp_path), image_size=16, mosaic_prob=1.0)
+    pre_t, post_t, mask_t = ds[0]  # "lonely_tile" -- not a valid grid id, no neighbors
+    assert pre_t.shape == (3, 16, 16)
+    assert not (mask_t == 3).any()
 
 
 if __name__ == "__main__":

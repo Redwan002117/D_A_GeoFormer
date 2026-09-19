@@ -71,6 +71,12 @@ segmentation via Mean Teacher) but its full text is paywalled; only the
 existence and framing were confirmed, not its specific numbers.
 
 ### 2. Mosaicing augmentation (distinct from the copy-paste already in use)
+**[IMPLEMENTED, S12.51.]** `dataset.py`'s `find_mosaic_groups()` +
+`_mosaic_tiles()`, opt-in via `--mosaic-prob`. Uses REAL tiling-grid
+adjacency parsed from tile_ids (confirmed 331/801 real tiles have a full
+2x2 neighborhood available), not an approximation. 11 new tests, verified
+against the real dataset directly. Not yet run in an actual training run.
+
 The SpaceNet-8 5th-place solution's single most-cited fix for flood-class
 scarcity was **not** a loss change — it was generating new training tiles by
 joining 4 adjacent real tiles into one, which mechanically increases flood

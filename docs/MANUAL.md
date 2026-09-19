@@ -2744,6 +2744,60 @@ not a data problem. This audit found what it found: two small, real,
 now-documented-or-fixed issues, not a hidden smoking gun. Worth knowing,
 not worth overstating.
 
+### S12.51 -- mosaic augmentation implemented (docs/RESEARCH_NOTES.md item 2)
+
+`dataset.py` gained `parse_tile_grid_id()`, `find_mosaic_groups()`, and
+`_mosaic_tiles()`, wired into `SpaceNet8Dataset` as `mosaic_prob` (opt-in,
+0.0 default, exact prior behavior otherwise) and exposed as
+`train.py --mosaic-prob`.
+
+**The key design fact that makes this a REAL mosaic, not an
+approximation**: SpaceNet-8 tile_ids encode genuine tiling-grid
+coordinates (`<aoi>_<row>_<col>`, e.g. `0_41_58`; Louisiana-East's
+`<AOI_Name>__<aoi>_<row>_<col>`) -- confirmed by parsing all 801 real
+tile_ids and checking how many have a complete 2x2 neighborhood of
+actually-adjacent tiles present in the downloaded data: **331 of 801
+(41%)**. Mosaicing composites an anchor tile with its real right/down/
+diagonal neighbors into a 2x2 grid, then resizes back down to
+`--image-size` -- 4 tiles' worth of real, already-labeled flood pixels
+compressed into the crop size the model always sees, mechanically
+increasing flood-pixel density per training sample without inventing a
+single fake pixel. This is the SpaceNet-8 5th-place solution's own
+single most-cited fix for flood-class scarcity (`docs/RESEARCH_NOTES.md`
+item 2), genuinely implemented here (real adjacent tiles), not
+approximated with unrelated ones.
+
+Distinct from `--copy-paste-prob`: copy-paste pastes one unrelated
+donor's flood footprint onto a possibly-unrelated background (a
+relabeling trick); mosaic uses 4 tiles that are actually next to each
+other on the ground (a real change of what image content the model sees).
+The two are mutually exclusive per sample in `__getitem__` (mosaic takes
+priority when both would trigger) so any measured effect stays
+attributable to one lever, not a blend of two.
+
+**Tested, including against the real dataset, not just synthetic
+fixtures**: 11 new tests in `tests/test_dataset.py` (grid-id parsing for
+both AOI naming conventions, AOI-boundary safety -- two different AOIs
+sharing `(row, col)` coordinates must never be treated as neighbors --
+correct quadrant placement, NEAREST-only mask resizing so no interpolated
+class index can appear, end-to-end wiring through `SpaceNet8Dataset`, and
+graceful fallback for a tile with no real neighbors). Then actually loaded
+a real mosaic sample from `real_sn8_dataset_full` directly (not through a
+full training run -- an initial attempt to smoke-test via a full
+`train.py` epoch hit this session's own tooling timeout, a red herring,
+not a code issue; a direct `dataset[idx]` call is faster and exercises the
+identical code path): confirmed 331/801 real eligible anchors, a real
+anchor tile's mosaic-composited output differs from its plain-tile output
+exactly as expected (different, denser class-pixel distribution), and
+output tensor shapes/dtypes are identical to the existing path, so
+`train.py`'s training loop needs no separate verification.
+
+**Status: available, not yet run against real data in an actual training
+run.** Per `docs/RESEARCH_NOTES.md`'s priority note, this and RMI loss are
+the two Tier-1/Tier-2 items most directly aimed at the actual bottleneck
+(flooded pixels under 1% of the dataset) rather than tuning around it --
+both still need a real training slot to show whether they help.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
