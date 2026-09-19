@@ -2705,6 +2705,45 @@ in this environment (same limitation `docs/DEPLOYMENT.md` already
 documents) -- `docker build` remains untested here, only the non-Docker
 `serve.py` path was actually exercised.
 
+### S12.50 -- annotation audit, finished: all 15 flagged tiles individually
+checked; cloud cover quantified across the whole dataset
+
+Closed out the last thread from S12.48/item 5: the remaining 6 of the 15
+misalignment-flagged tiles were individually visually inspected (15/15
+now complete, no more deferred). Final breakdown of what the misalignment
+proxy was actually catching:
+
+| Cause | Count (of 15) | Carries a flood label? |
+|---|---|---|
+| Genuine cloud cover | 10 | No (0 of 10) |
+| No-data / swath-edge gap | 1 | No |
+| False positive -- real flood event, not misalignment | 1 | Yes (correctly) |
+| Partial cloud over a real, correctly-labeled flood | 1 | Yes |
+| No real issue found (benign) | 2 | No |
+
+**Then quantified cloud cover across the full 801-tile dataset**, not just
+the top-15 (the brightness/contrast proxy -- `brightness > 150 and
+contrast < 35` on the post-image -- was validated well enough on the
+top-15 to trust as a coarse dataset-wide filter): **33 of 801 tiles
+(4.1%) are cloud-suspect. Zero of them carry a flood label.** The one
+known flood-labeled tile with partial cloud (`..._0_19_13`) doesn't cross
+this coarser threshold because it's only partially obscured with real
+ground visible -- consistent, not a contradiction: this filter catches
+"post-image mostly unusable," not "partially cloudy with some real
+content," which is exactly the nuance the misalignment-proxy-plus-manual-
+check route caught that this quicker filter can't.
+
+**The honest bottom line for this whole audit (S12.48-S12.50)**: the
+801-tile real dataset has two confirmed, real data-quality issues --
+~4% cloud-affected post-images (degrades structural/building/road signal
+on those specific tiles, doesn't touch flood-label training data directly)
+and the pixel-count-resolution bug (S12.48, fixed). Neither is large
+enough to be "the" explanation for the flooded-F1 plateau S12.44-S12.45
+diagnosed and fixed -- that was a real code bug (the patience mechanism),
+not a data problem. This audit found what it found: two small, real,
+now-documented-or-fixed issues, not a hidden smoking gun. Worth knowing,
+not worth overstating.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment

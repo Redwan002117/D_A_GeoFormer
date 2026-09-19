@@ -153,18 +153,20 @@ exist in their actual training mask. Fixed by `fix_index_pixel_counts.py`
 (5 tests), applied to the real dataset. Full writeup: `docs/MANUAL.md`
 S12.48.
 
-**Follow-up pass**: 6 more of the 15 misalignment-flagged tiles checked
-(9/15 total now), including the one that mattered most — the largest
-flood-labeled tile in the flagged list turned out to be a real, correctly-
-labeled flood partially under cloud cover, not an error. Full detail in
-`docs/MANUAL.md` S12.48. 6 tiles (none flood-labeled) remain unchecked —
-deprioritized since they can't be corrupting flood-detection training
-specifically. The SOTA paper's own broader "remove mislabeled tiles"
-sweep (they don't publish which tiles or how many) is still not
-replicated here — this pass found and fixed one concrete, real bug
-(the pixel-count resolution mismatch) and characterized the misalignment
-proxy's real false-positive/true-positive mix, not an exhaustive
-tile-by-tile relabel.
+**[CLOSED OUT, S12.50.]** All 15 misalignment-flagged tiles individually
+checked (15/15): 10 genuine cloud cover, 1 no-data/swath-edge gap, 1 false
+positive (a real flood event, not misalignment), 1 real flood partially
+under cloud, 2 benign. Then quantified across the **whole** 801-tile
+dataset using the now-validated brightness/contrast proxy: **33 tiles
+(4.1%) are cloud-affected, and zero of them carry a flood label** — the
+data-quality issues found are real but don't directly corrupt
+flood-detection training signal. Full detail in `docs/MANUAL.md` S12.48-
+S12.50. The SOTA paper's own broader "remove mislabeled tiles" sweep
+(they don't publish which tiles or how many, so it's not directly
+replicable) is still not attempted here — this audit found and fixed one
+concrete, real bug (the pixel-count resolution mismatch) and fully
+characterized what the misalignment proxy catches, which is a complete,
+bounded piece of work, not a partial one.
 
 The same SpaceNet-8 SOTA paper (arXiv 2404.18235) reports its single
 largest, cleanly-attributed improvement came from **removing mislabeled
