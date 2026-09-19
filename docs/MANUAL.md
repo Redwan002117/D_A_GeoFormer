@@ -2657,6 +2657,54 @@ remains the pixel-count-resolution mismatch above (S12.48's first
 section)** -- a real, systematic bug, not a large one in raw tile count
 (2 of 801), but a genuine bug nonetheless, now fixed and tested.
 
+### S12.49 -- v15 result so far, the v16 plan, and a real service-path check
+
+**v15 is working.** Mean flooded F1, epochs 80-89 (right after the S12.45
+unfreeze): 0.539. Epochs 90-108 (since): 0.558+, with epoch 100 hitting
+**0.5703 -- the highest flooded F1 recorded anywhere in this project's
+real-data history**, beating both v14's stuck peak (0.5463, epoch 51) and
+its best-ever single epoch (0.5608, epoch 73, reached only via trunk drift
+after the flood head was already frozen). Unfreezing the flood head was
+the right call.
+
+**Planned v16, ready to launch the moment v15's 150 epochs finish**:
+resume from `checkpoints_v15/best.pt` (not `last.pt` this time -- unlike
+the v14->v15 transition, there's no freeze artifact to route around here,
+so the best overall checkpoint by `min_f1` is the more principled
+foundation for a new experimental branch than the literal last epoch),
+add `--flood-rmi-weight 0.3` on top of the otherwise-unchanged v15 recipe
+-- one new variable at a time, not combined with a `--flood-loss-fn`
+change, so any effect can actually be attributed to RMI specifically. 0.3
+is a first-guess starting weight (the flood loss already has Tversky as
+primary plus `--flood-bce-weight 1.0`; RMI shouldn't dominate on its
+first real-data test), not a tuned value -- expect to revisit based on
+what v16 actually shows.
+
+```
+python train.py --data-dir real_sn8_dataset_full --image-size 256 --batch-size 2 --epochs 150 \
+  --oversample-rare-classes --class-weights 1,2,2,4 --pretrained-backbone efficientnet_b0 \
+  --freeze-backbone-epochs 3 --checkpoint-metric min_f1 --augment --separate-flood-head \
+  --flood-class-weight 20 --flood-tversky-beta 0.9 --flood-bce-weight 1.0 \
+  --flood-rmi-weight 0.3 \
+  --copy-paste-prob 0.3 --ema-momentum 0.002 \
+  --resume checkpoints_v15/best.pt --checkpoint-dir checkpoints_v16 \
+  --log-csv training_log_geoformer_801_v16.csv
+```
+
+**Service path re-verified end to end, for real, not assumed clean just
+because this session's edits (losses.py, train.py, postprocess.py,
+evaluate.py) don't obviously touch it**: started `serve.py` locally
+(`python -m uvicorn serve:app`, using the interpreter that actually has
+torch installed -- this machine's plain `uvicorn` on PATH resolves to a
+DIFFERENT Python install without it, a real environment quirk worth
+knowing about, not a code bug) against `checkpoints_v14/best.pt`. `GET
+/health` returned the expected status+model provenance string; `POST
+/predict` against a real tile pair returned HTTP 200 with class pixel
+fractions and a real overlay PNG. The Docker daemon is still not running
+in this environment (same limitation `docs/DEPLOYMENT.md` already
+documents) -- `docker build` remains untested here, only the non-Docker
+`serve.py` path was actually exercised.
+
 ## 13. Bottlenecks, honestly, and how to actually overcome each one
 
 Four real bottlenecks were hit while building this, in this environment
